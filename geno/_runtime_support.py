@@ -4674,6 +4674,12 @@ _GENO_EXTERN_MAX_DEPTH = 320
 _GENO_EXTERN_HOSTS: dict = {}
 
 
+def _geno_extern_ref_name(key: str) -> str:
+    """Human-readable name for a codec user-type key (``.User`` -> ``User``)."""
+    out = key[1:] if key.startswith(".") else key
+    return out.replace("[.", "[").replace(", .", ", ").replace("(.", "(")
+
+
 def _geno_extern_type_text(shape: Any) -> str:
     """The Geno type a shape describes, for messages."""
     kind = shape[0]
@@ -4693,7 +4699,15 @@ def _geno_extern_type_text(shape: Any) -> str:
         return "Option[" + _geno_extern_type_text(shape[1]) + "]"
     if kind == "map":
         return "Map[String, " + _geno_extern_type_text(shape[1]) + "]"
+    if kind == "ref":
+        return _geno_extern_ref_name(shape[1])
+    if kind == "extern_result":
+        return "Result[" + _geno_extern_type_text(shape[1]) + ", String]"
     return "(" + ", ".join(_geno_extern_type_text(item) for item in shape[1]) + ")"
+
+
+def _geno_extern_types(types: Any) -> dict[Any, Any]:
+    return dict(types) if types else {}
 
 
 def _geno_extern_mismatch(path: Any, wanted: str, value: Any) -> Any:
@@ -4703,35 +4717,71 @@ def _geno_extern_mismatch(path: Any, wanted: str, value: Any) -> Any:
     )
 
 
-def _geno_extern_to_host(value: Any, shape: Any, ops: Any) -> Any:
+def _geno_extern_to_host(
+    value: Any, shape: Any, ops: Any, types: Any = None, depth: int = 0
+) -> Any:
     """The host value an argument of the type *shape* describes becomes."""
     kind = shape[0]
+    if kind == "json":
+        return _geno_extern_json_to_host(value, ops, depth)
+    if depth >= _GENO_EXTERN_MAX_DEPTH:
+        raise _GenoExternFailure(
+            "an argument nested more than "
+            + str(_GENO_EXTERN_MAX_DEPTH)
+            + " levels deep"
+        )
     if kind in ("int", "float", "string", "bool"):
         return value
     if kind == "unit":
         return None
     if kind == "list":
-        return [_geno_extern_to_host(item, shape[1], ops) for item in value]
+        return [
+            _geno_extern_to_host(item, shape[1], ops, types, depth + 1)
+            for item in value
+        ]
     if kind == "tuple":
         return tuple(
-            _geno_extern_to_host(item, item_shape, ops)
-            for item, item_shape in zip(value, shape[1])
+            _geno_extern_to_host(item, item_shape, ops, types, depth + 1)
+            for item, item_shape in _builtin_zip(value, shape[1])
         )
     if kind == "option":
         if ops.is_variant(value, "Some"):
-            return _geno_extern_to_host(ops.get(value, "value"), shape[1], ops)
+            return _geno_extern_to_host(
+                ops.get(value, "value"), shape[1], ops, types, depth
+            )
         return None
     if kind == "map":
         return {
-            key: _geno_extern_to_host(item, shape[1], ops)
+            key: _geno_extern_to_host(item, shape[1], ops, types, depth + 1)
             for key, item in ops.map_pairs(value)
         }
-    return _geno_extern_json_to_host(value, ops, 0)
+    described = types[shape[1]]
+    if described[0] == "enum":
+        for constructor in described[1]:
+            if ops.is_variant(value, constructor, shape[2]):
+                return constructor
+        raise _GenoExternFailure("a value that is not of its declared type")
+    if described[0] == "record":
+        return {
+            name: _geno_extern_to_host(
+                ops.get(value, name), field_shape, ops, types, depth + 1
+            )
+            for name, field_shape in described[2]
+        }
+    for constructor, fields in described[1]:
+        if ops.is_variant(value, constructor, shape[2]):
+            out: dict[str, Any] = {"type": constructor}
+            for name, field_shape in fields:
+                out[name] = _geno_extern_to_host(
+                    ops.get(value, name), field_shape, ops, types, depth + 1
+                )
+            return out
+    raise _GenoExternFailure("a value that is not of its declared type")
 
 
 def _geno_extern_json_to_host(node: Any, ops: Any, depth: int) -> Any:
     if depth >= _GENO_EXTERN_MAX_DEPTH:
-        # _geno_extern_invoke names the extern in front of this.
+        # _geno_extern_prepare names the extern in front of this.
         raise _GenoExternFailure(
             "a JsonValue argument nested more than "
             + str(_GENO_EXTERN_MAX_DEPTH)
@@ -4753,8 +4803,56 @@ def _geno_extern_json_to_host(node: Any, ops: Any, depth: int) -> Any:
     return ops.get(node, "value")
 
 
+def _geno_extern_dict_pairs(value: Any, path: Any, ops: Any) -> list[tuple[str, Any]]:
+    """Validate and copy a host dict's string keys without running subclass hooks."""
+    if not isinstance(value, dict):
+        _geno_extern_mismatch(path, "a dict", value)
+    _geno_extern_size(ops, "Map", dict.__len__(value))
+    pairs: list[tuple[str, Any]] = []
+    for key, item in dict.items(value):
+        if not isinstance(key, str):
+            _geno_extern_mismatch(path, "a dict with str keys", key)
+        _geno_extern_size(ops, "String", str.__len__(key))
+        pairs.append((_geno_extern_str(key), item))
+    return pairs
+
+
+def _geno_extern_fields(
+    entries: dict[str, Any],
+    fields: Any,
+    types: Any,
+    path: Any,
+    ops: Any,
+    depth: int,
+) -> list[Any]:
+    values: list[Any] = []
+    for name, field_shape in fields:
+        if name in entries:
+            values.append(
+                _geno_extern_from_host(
+                    entries[name],
+                    field_shape,
+                    (path, _geno_json_key(name)),
+                    ops,
+                    depth,
+                    types,
+                )
+            )
+        elif field_shape[0] == "option":
+            values.append(ops.none())
+        else:
+            where = "" if path is None else _geno_json_path(path) + ": "
+            raise _GenoExternMismatch(where + "missing field " + _geno_json_quote(name))
+    return values
+
+
 def _geno_extern_from_host(
-    value: Any, shape: Any, path: Any, ops: Any, depth: int
+    value: Any,
+    shape: Any,
+    path: Any,
+    ops: Any,
+    depth: int,
+    types: Any = None,
 ) -> Any:
     """The Geno value of the type *shape* describes that host *value* is."""
     if depth >= _GENO_EXTERN_MAX_DEPTH:
@@ -4796,7 +4894,9 @@ def _geno_extern_from_host(
     if kind == "option":
         if value is None:
             return ops.none()
-        return ops.some(_geno_extern_from_host(value, shape[1], path, ops, depth))
+        return ops.some(
+            _geno_extern_from_host(value, shape[1], path, ops, depth, types)
+        )
     if kind == "list":
         if not isinstance(value, (list, tuple)):
             _geno_extern_mismatch(path, "a list", value)
@@ -4804,7 +4904,7 @@ def _geno_extern_from_host(
         _geno_extern_size(ops, "List", size)
         return [
             _geno_extern_from_host(
-                item, shape[1], (path, "[" + str(index) + "]"), ops, depth
+                item, shape[1], (path, "[" + str(index) + "]"), ops, depth, types
             )
             for index, item in _builtin_enumerate(items)
         ]
@@ -4822,31 +4922,77 @@ def _geno_extern_from_host(
             )
         return tuple(
             _geno_extern_from_host(
-                item, item_shape, (path, "[" + str(index) + "]"), ops, depth
+                item,
+                item_shape,
+                (path, "[" + str(index) + "]"),
+                ops,
+                depth,
+                types,
             )
             for index, (item, item_shape) in _builtin_enumerate(
                 _builtin_zip(items, shape[1])
             )
         )
     if kind == "map":
-        if not isinstance(value, dict):
-            _geno_extern_mismatch(path, "a dict", value)
-        _geno_extern_size(ops, "Map", dict.__len__(value))
-        pairs = []
-        for key, item in dict.items(value):
-            if not isinstance(key, str):
-                _geno_extern_mismatch(path, "a dict with str keys", key)
-            _geno_extern_size(ops, "String", str.__len__(key))
-            key = _geno_extern_str(key)
-            pairs.append(
-                (
-                    key,
-                    _geno_extern_from_host(
-                        item, shape[1], (path, _geno_json_key(key)), ops, depth
-                    ),
-                )
+        pairs = [
+            (
+                key,
+                _geno_extern_from_host(
+                    item, shape[1], (path, _geno_json_key(key)), ops, depth, types
+                ),
             )
+            for key, item in _geno_extern_dict_pairs(value, path, ops)
+        ]
         return ops.map(pairs)
+    if kind == "ref":
+        described = types[shape[1]]
+        if described[0] == "enum":
+            if not isinstance(value, str):
+                _geno_extern_mismatch(path, "String", value)
+            _geno_extern_size(ops, "String", str.__len__(value))
+            tag_name = _geno_extern_str(value)
+            if tag_name not in described[1]:
+                where = "" if path is None else _geno_json_path(path) + ": "
+                raise _GenoExternMismatch(
+                    where
+                    + "expected "
+                    + _geno_json_one_of(described[1])
+                    + ", got "
+                    + _geno_json_quote(tag_name)
+                )
+            return ops.make(shape[2], tag_name, (), [])
+        entries = dict(_geno_extern_dict_pairs(value, path, ops))
+        if described[0] == "record":
+            return ops.make(
+                shape[2],
+                described[1],
+                described[2],
+                _geno_extern_fields(entries, described[2], types, path, ops, depth),
+            )
+        if "type" not in entries:
+            where = "" if path is None else _geno_json_path(path) + ": "
+            raise _GenoExternMismatch(where + 'missing field "type"')
+        chosen = entries["type"]
+        type_path = (path, ".type")
+        if not isinstance(chosen, str):
+            _geno_extern_mismatch(type_path, "String", chosen)
+        _geno_extern_size(ops, "String", str.__len__(chosen))
+        tag_name = _geno_extern_str(chosen)
+        for constructor, fields in described[1]:
+            if constructor == tag_name:
+                return ops.make(
+                    shape[2],
+                    constructor,
+                    fields,
+                    _geno_extern_fields(entries, fields, types, path, ops, depth),
+                )
+        raise _GenoExternMismatch(
+            _geno_json_path(type_path)
+            + ": expected "
+            + _geno_json_one_of([constructor for constructor, _ in described[1]])
+            + ", got "
+            + _geno_json_quote(tag_name)
+        )
     return _geno_extern_json_from_host(value, path, ops, depth)
 
 
@@ -4985,13 +5131,62 @@ def _geno_extern_load(name: str, binding: Any) -> Any:
     return target
 
 
-def _geno_extern_invoke(
-    name: str, binding: Any, args: Any, params: Any, result: Any, ops: Any
-) -> Any:
-    """Call extern *name* once its capability is granted.
+class _GenoExternBoundary:
+    """Shared host-call error boundary for sync and async extern functions."""
 
-    Raises ``_GenoExternFailure`` with the panic's message.
-    """
+    def __init__(self, name: str, binding: Any, result: Any, ops: Any) -> None:
+        self.name = name
+        self.binding = binding
+        self.ops = ops
+        self.fallible = result[0] == "extern_result"
+        self.ok_shape = result[1] if self.fallible else result
+        self.phase = "load"
+        self.error_result: Any = None
+
+    def __enter__(self) -> "_GenoExternBoundary":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        if exc is None or not isinstance(exc, Exception):
+            return False
+        if isinstance(exc, _GenoExternFailure):
+            return False
+        if isinstance(exc, _GenoExternMismatch):
+            raise _GenoExternFailure(
+                "Extern function '"
+                + self.name
+                + "' returned a value that is not "
+                + _geno_extern_type_text(self.ok_shape)
+                + ": "
+                + str(exc)
+            ) from None
+        if isinstance(exc, _GenoExternLimit):
+            raise exc.args[0] from None
+        detail = type(exc).__name__ + ": " + str(exc)
+        if self.phase == "load":
+            raise _GenoExternFailure(
+                "Extern function '"
+                + self.name
+                + "' could not load its python binding '"
+                + _geno_extern_spec(self.binding)
+                + "': "
+                + detail
+            ) from None
+        if self.phase == "call" and self.fallible:
+            try:
+                _geno_extern_size(self.ops, "String", len(detail))
+            except _GenoExternLimit as limit:
+                raise limit.args[0] from None
+            self.error_result = self.ops.err(detail)
+            return True
+        raise _GenoExternFailure(
+            "Extern function '" + self.name + "' failed: " + detail
+        ) from None
+
+
+def _geno_extern_prepare(
+    name: str, binding: Any, args: Any, params: Any, ops: Any, type_map: Any
+) -> list[Any]:
     if binding is None:
         raise _GenoExternFailure(
             "Extern function '"
@@ -4999,58 +5194,109 @@ def _geno_extern_invoke(
             + "' has no python binding, so it cannot run on this backend"
         )
     try:
-        host_args = [
-            _geno_extern_to_host(value, shape, ops)
+        return [
+            _geno_extern_to_host(value, shape, ops, type_map, 0)
             for value, shape in _builtin_zip(args, params)
         ]
     except _GenoExternFailure as failure:
         raise _GenoExternFailure(
             "Extern function '" + name + "' got " + str(failure)
         ) from None
-    loading = True
-    # Host code — the binding's import, the call, or result inspection — can
-    # raise anything: this is the one boundary where it becomes a Geno panic.
-    try:
+
+
+def _geno_is_awaitable(value: Any) -> bool:
+    import inspect
+
+    return inspect.isawaitable(value)
+
+
+def _geno_extern_invoke(
+    name: str,
+    binding: Any,
+    args: Any,
+    params: Any,
+    result: Any,
+    ops: Any,
+    types: Any = None,
+) -> Any:
+    """Call extern *name* once its capability is granted.
+
+    Raises ``_GenoExternFailure`` with the panic's message.
+    """
+    type_map = _geno_extern_types(types)
+    host_args = _geno_extern_prepare(name, binding, args, params, ops, type_map)
+    boundary = _GenoExternBoundary(name, binding, result, ops)
+    with boundary:
         host = _geno_extern_load(name, binding)
-        loading = False
+        boundary.phase = "call"
         value = host(*host_args)
-        return _geno_extern_from_host(value, result, None, ops, 0)
-    except _GenoExternFailure:
-        raise
-    except _GenoExternMismatch as mismatch:
-        raise _GenoExternFailure(
-            "Extern function '"
-            + name
-            + "' returned a value that is not "
-            + _geno_extern_type_text(result)
-            + ": "
-            + str(mismatch)
-        ) from None
-    except _GenoExternLimit as limit:
-        raise limit.args[0] from None
-    except Exception as exc:
-        detail = type(exc).__name__ + ": " + str(exc)
-        if loading:
-            raise _GenoExternFailure(
-                "Extern function '"
-                + name
-                + "' could not load its python binding '"
-                + _geno_extern_spec(binding)
-                + "': "
-                + detail
-            ) from None
-        raise _GenoExternFailure(
-            "Extern function '" + name + "' failed: " + detail
-        ) from None
+        boundary.phase = "convert"
+        converted = _geno_extern_from_host(
+            value, boundary.ok_shape, None, ops, 0, type_map
+        )
+        return ops.ok(converted) if boundary.fallible else converted
+    return boundary.error_result
+
+
+async def _geno_extern_invoke_async(
+    name: str,
+    binding: Any,
+    args: Any,
+    params: Any,
+    result: Any,
+    ops: Any,
+    types: Any = None,
+) -> Any:
+    """Call async extern *name* once its capability is granted."""
+    type_map = _geno_extern_types(types)
+    host_args = _geno_extern_prepare(name, binding, args, params, ops, type_map)
+    boundary = _GenoExternBoundary(name, binding, result, ops)
+    with boundary:
+        host = _geno_extern_load(name, binding)
+        boundary.phase = "call"
+        value = host(*host_args)
+        if _geno_is_awaitable(value):
+            value = await value
+        boundary.phase = "convert"
+        converted = _geno_extern_from_host(
+            value, boundary.ok_shape, None, ops, 0, type_map
+        )
+        return ops.ok(converted) if boundary.fallible else converted
+    return boundary.error_result
 
 
 def _geno_extern_call(
-    name: str, binding: Any, args: Any, params: Any, result: Any
+    name: str,
+    binding: Any,
+    args: Any,
+    params: Any,
+    result: Any,
+    types: Any = None,
 ) -> Any:
     """An extern call in compiled Python: the capability, then the host."""
     _require_cap("ffi", name)
     try:
-        return _geno_extern_invoke(name, binding, args, params, result, _GENO_JSON_OPS)
+        return _geno_extern_invoke(
+            name, binding, args, params, result, _GENO_JSON_OPS, types
+        )
+    except _GenoExternFailure as failure:
+        raise _geno_panic_error(str(failure)) from None
+
+
+async def _geno_extern_call_async(
+    name: str,
+    binding: Any,
+    args: Any,
+    params: Any,
+    result: Any,
+    types: Any = None,
+) -> Any:
+    """An async extern call in compiled Python: the capability, then the host."""
+    _require_cap("ffi", name)
+    try:
+        return await _geno_extern_invoke_async(
+            name, binding, args, params, result, _GENO_JSON_OPS, types
+        )
     except _GenoExternFailure as failure:
         raise _geno_panic_error(str(failure)) from None
 

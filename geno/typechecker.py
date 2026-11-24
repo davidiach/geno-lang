@@ -105,7 +105,7 @@ from .constructor_args import constructor_argument_order
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix, replace_fix
 from .entrypoint import find_entrypoint_main
 from .exhaustiveness import ExhaustivenessMixin
-from .extern import ExternTypeError, marshal_shape
+from .extern import ExternCodec, ExternShapeBuilder, ExternTypeError
 from .float_promotion import float_shape, promotion_shape
 from .format_spec import FormatSpecError, parse_format_spec, value_kind
 from .json_shape import JsonTypeError, build_codec
@@ -3128,8 +3128,11 @@ class TypeChecker(ExhaustivenessMixin):
 
         An extern has no body, examples or contracts: the parser rejects
         them. What is left is its types, each of which must cross the host
-        boundary, and the shapes the runtimes convert with.
+        boundary, and the shapes and user-type descriptors the runtimes
+        convert with.
         """
+        codec_defs = {**self.type_defs, **self._scoped_type_defs}
+        builder = ExternShapeBuilder(codec_defs)
         seen: set[str] = set()
         param_shapes = []
         for param in defn.params:
@@ -3143,7 +3146,7 @@ class TypeChecker(ExhaustivenessMixin):
             param_type = self._resolve_type(param.param_type)
             param._resolved_type = param_type
             try:
-                param_shapes.append(marshal_shape(param_type))
+                param_shapes.append(builder.param_shape(param_type))
             except ExternTypeError as exc:
                 self._error(
                     f"Extern function '{defn.name}' cannot take parameter "
@@ -3153,7 +3156,7 @@ class TypeChecker(ExhaustivenessMixin):
                 )
         return_type = self._resolve_type(defn.return_type)
         try:
-            return_shape = marshal_shape(return_type)
+            return_shape = builder.return_shape(return_type)
         except ExternTypeError as exc:
             self._error(
                 f"Extern function '{defn.name}' cannot return {return_type}: {exc}",
@@ -3162,7 +3165,9 @@ class TypeChecker(ExhaustivenessMixin):
             )
             return
         if len(param_shapes) == len(defn.params):
-            defn._extern_shapes = (tuple(param_shapes), return_shape)
+            defn._extern_shapes = ExternCodec(
+                tuple(param_shapes), return_shape, dict(builder.types)
+            )
 
     def _inferred_function_return_type(self, return_types: list[Type]) -> Type | None:
         """The one type a function's ``return`` values agree on, if any.

@@ -1665,16 +1665,23 @@ class Compiler(BaseCompiler, ASTVisitor):
         """
         if defn._extern_shapes is None:
             raise CompileError(f"Extern function '{defn.name}' was not type-checked")
-        params, result = defn._extern_shapes
+        codec = defn._extern_shapes
         spec = (defn.extern_bindings or {}).get("python")
         binding = None if spec is None else python_binding(spec)
         arguments = _python_tuple(self._mangle_name(p.name) for p in defn.params)
+        types_arg = tuple(codec.types.items())
         # Located at the declaration, as the interpreter locates the call.
         with self._traced_statement(defn.location):
-            self._writeln(
-                f"return _geno_extern_call({defn.name!r}, {binding!r}, "
-                f"{arguments}, {params!r}, {result!r})"
-            )
+            if defn.is_async:
+                self._writeln(
+                    f"return await _geno_extern_call_async({defn.name!r}, {binding!r}, "
+                    f"{arguments}, {codec.params!r}, {codec.result!r}, {types_arg!r})"
+                )
+            else:
+                self._writeln(
+                    f"return _geno_extern_call({defn.name!r}, {binding!r}, "
+                    f"{arguments}, {codec.params!r}, {codec.result!r}, {types_arg!r})"
+                )
 
     def _compile_function_interior(
         self, defn: FunctionDef, tail_plan: TailCallPlan | None

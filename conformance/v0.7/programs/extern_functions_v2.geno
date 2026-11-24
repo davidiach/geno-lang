@@ -1,0 +1,34 @@
+// FFI v2: fallible externs (Result[T, String]), async extern func,
+// and records/enums/unions crossing the host boundary on all three backends.
+
+type Color = Red | Green | Blue
+type User = User(name: String, age: Int, color: Color)
+
+extern func parse_user(text: String) -> Result[User, String] with ffi
+    python "json:loads"
+    js "JSON.parse"
+end func
+
+extern func dump_user(user: User) -> String with ffi
+    python "json:dumps"
+    js "JSON.stringify"
+end func
+
+async extern func async_sqrt(x: Float) -> Float with ffi
+    python "math:sqrt"
+    js "Math.sqrt"
+end func
+
+func main() -> Unit with ffi, io
+    let original = User(name: "Ada", age: 36, color: Green)
+    let encoded = dump_user(original)
+    match parse_user(encoded) with
+        | Ok(decoded) -> print(decoded == original)
+        | Err(msg) -> print(f"unexpected: {msg}")
+    end match
+    match parse_user("{") with
+        | Ok(_) -> print("unexpected ok")
+        | Err(_) -> print("caught")
+    end match
+    print(await async_sqrt(16.0))
+end func

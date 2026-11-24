@@ -389,7 +389,9 @@ def _render_signature_html(func: FuncDoc) -> str:
     pn = '<span class="param-name">'
     end = "</span>"
 
-    if func.is_async:
+    if func.is_async and func.is_extern:
+        prefix = f"{kw}async extern func{end}"
+    elif func.is_async:
         prefix = f"{kw}async func{end}"
     elif func.is_extern:
         prefix = f"{kw}extern func{end}"

@@ -573,6 +573,14 @@ capabilities = ["ffi", "print"]
 expected_stdout = "5.0\n11\n6\n2\n"
 
 [[cases]]
+id = "extern-functions-v2"
+path = "programs/extern_functions_v2.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["ffi", "print"]
+expected_stdout = "true\ncaught\n4.0\n"
+
+[[cases]]
 id = "diagnostic-extern-type"
 path = "programs/diagnostic_extern_type.geno"
 kind = "diagnostic"

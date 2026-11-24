@@ -13,6 +13,18 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- FFI v2 extensions to `extern func` on all three backends (interpreter,
+  compiled Python and compiled JavaScript):
+  - Fallible externs: a top-level `Result[T, String]` return type turns host
+    call exceptions and rejected Promises into `Err(detail)` (subject to
+    collection/string limits), while binding-load failures, type mismatches,
+    and resource limits still fail loudly.
+  - `async extern func`: binds async Python coroutines/awaitables and
+    JavaScript Promise-returning functions (also accepting plain synchronous
+    returns), returning `Async[T]` with single-execution semantics.
+  - Records, nullary enums, tagged unions, generic instantiations, recursive
+    user types, and imported module ADTs cross the FFI boundary using typed
+    JSON's wire representation, with full subclass-hook and size-limit guards.
 - Extern functions (Experimental), from accepted
   [proposal 0025](docs/proposals/0025-extern-functions.md): `extern func
   name(params) -> Type with ffi`, followed by a `python "module:attribute"`

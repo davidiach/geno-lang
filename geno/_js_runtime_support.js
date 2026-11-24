@@ -5293,6 +5293,11 @@ function _genoExternSize(kind, size) {
     }
 }
 
+function _genoExternRefName(key) {
+    const out = key.startsWith(".") ? key.slice(1) : key;
+    return out.replaceAll("[.", "[").replaceAll(", .", ", ").replaceAll("(.", "(");
+}
+
 function _genoExternTypeText(shape) {
     const simple = {
         int: "Int", float: "Float", string: "String", bool: "Bool",
@@ -5303,7 +5308,13 @@ function _genoExternTypeText(shape) {
     if (kind === "list") return "List[" + _genoExternTypeText(shape[1]) + "]";
     if (kind === "option") return "Option[" + _genoExternTypeText(shape[1]) + "]";
     if (kind === "map") return "Map[String, " + _genoExternTypeText(shape[1]) + "]";
+    if (kind === "ref") return _genoExternRefName(shape[1]);
+    if (kind === "extern_result") return "Result[" + _genoExternTypeText(shape[1]) + ", String]";
     return "(" + shape[1].map(_genoExternTypeText).join(", ") + ")";
+}
+
+function _genoExternTypes(types) {
+    return types ? new _GENO_MAP(types) : new _GENO_MAP();
 }
 
 function _GENO_OBJECT_HAS(object, key) {
@@ -5339,20 +5350,49 @@ function _genoExternObject(pairs) {
     return out;
 }
 
-function _genoExternToHost(value, shape) {
+function _genoExternToHost(value, shape, types = null, depth = 0) {
     const kind = shape[0];
+    if (kind === "json") return _genoExternJsonToHost(value, depth);
+    if (depth >= _GENO_EXTERN_MAX_DEPTH) {
+        throw new _GenoExternMismatch(
+            "an argument nested more than " + _GENO_EXTERN_MAX_DEPTH + " levels deep");
+    }
     if (kind === "int" || kind === "float" || kind === "string" || kind === "bool") return value;
     if (kind === "unit") return null;
-    if (kind === "list") return value.map(item => _genoExternToHost(item, shape[1]));
-    if (kind === "tuple") return value.map((item, index) => _genoExternToHost(item, shape[1][index]));
+    if (kind === "list") return value.map(item => _genoExternToHost(item, shape[1], types, depth + 1));
+    if (kind === "tuple") {
+        return value.map((item, index) => _genoExternToHost(item, shape[1][index], types, depth + 1));
+    }
     if (kind === "option") {
-        return value._tag === "Some" ? _genoExternToHost(value.value, shape[1]) : null;
+        return value._tag === "Some" ? _genoExternToHost(value.value, shape[1], types, depth) : null;
     }
     if (kind === "map") {
         return _genoExternObject(
-            map_entries(value).map(([key, item]) => [key, _genoExternToHost(item, shape[1])]));
+            map_entries(value).map(([key, item]) => [key, _genoExternToHost(item, shape[1], types, depth + 1)]));
     }
-    return _genoExternJsonToHost(value, 0);
+    const described = types.get(shape[1]);
+    if (described[0] === "enum") {
+        if (described[1].includes(value._tag)) return value._tag;
+        throw new _GenoExternMismatch("a value that is not of its declared type");
+    }
+    if (described[0] === "record") {
+        return _genoExternObject(
+            described[2].map(([name, fieldShape]) => [
+                name,
+                _genoExternToHost(value[name], fieldShape, types, depth + 1),
+            ])
+        );
+    }
+    for (const [constructor, fields] of described[1]) {
+        if (value._tag === constructor) {
+            const pairs = [["type", constructor]];
+            for (const [name, fieldShape] of fields) {
+                pairs.push([name, _genoExternToHost(value[name], fieldShape, types, depth + 1)]);
+            }
+            return _genoExternObject(pairs);
+        }
+    }
+    throw new _GenoExternMismatch("a value that is not of its declared type");
 }
 
 function _genoExternJsonToHost(node, depth) {
@@ -5402,7 +5442,23 @@ function _genoExternEntries(value, path) {
     });
 }
 
-function _genoExternFromHost(value, shape, path, depth) {
+function _genoExternFields(entries, fields, types, path, depth) {
+    const values = [];
+    for (const [name, fieldShape] of fields) {
+        if (entries.has(name)) {
+            values.push(_genoExternFromHost(
+                entries.get(name), fieldShape, [path, _genoJsonKey(name)], depth, types));
+        } else if (fieldShape[0] === "option") {
+            values.push(None_);
+        } else {
+            throw new _GenoExternMismatch(
+                _genoExternWhere(path) + "missing field " + _GENO_JSON.stringify(name));
+        }
+    }
+    return values;
+}
+
+function _genoExternFromHost(value, shape, path, depth, types = null) {
     if (depth >= _GENO_EXTERN_MAX_DEPTH) {
         throw new _GenoExternMismatch("the result is nested too deeply");
     }
@@ -5434,14 +5490,14 @@ function _genoExternFromHost(value, shape, path, depth) {
     }
     if (kind === "option") {
         if (value === null || value === undefined) return None_;
-        return Some(_genoExternFromHost(value, shape[1], path, depth));
+        return Some(_genoExternFromHost(value, shape[1], path, depth, types));
     }
     if (kind === "list") {
         if (!Array.isArray(value)) _genoExternMismatch(path, "an array", value);
         _genoExternSize("List", value.length);
         // Array.from visits every index, so a hole is checked as undefined.
         return Array.from(value, (item, index) =>
-            _genoExternFromHost(item, shape[1], [path, "[" + index + "]"], depth));
+            _genoExternFromHost(item, shape[1], [path, "[" + index + "]"], depth, types));
     }
     if (kind === "tuple") {
         if (!Array.isArray(value)) _genoExternMismatch(path, "an array", value);
@@ -5450,13 +5506,46 @@ function _genoExternFromHost(value, shape, path, depth) {
                 + shape[1].length + " items, got " + value.length);
         }
         return Array.from(value, (item, index) =>
-            _genoExternFromHost(item, shape[1][index], [path, "[" + index + "]"], depth));
+            _genoExternFromHost(item, shape[1][index], [path, "[" + index + "]"], depth, types));
     }
     if (kind === "map") {
         const entries = _genoExternEntries(value, path);
         _genoExternSize("Map", entries.length);
         return _mapLiteral(entries.map(([key, item]) =>
-            [key, _genoExternFromHost(item, shape[1], [path, _genoJsonKey(key)], depth)]));
+            [key, _genoExternFromHost(item, shape[1], [path, _genoJsonKey(key)], depth, types)]));
+    }
+    if (kind === "ref") {
+        const described = types.get(shape[1]);
+        if (described[0] === "enum") {
+            if (typeof value !== "string") _genoExternMismatch(path, "String", value);
+            _genoExternSize("String", _stringLength(value));
+            if (!described[1].includes(value)) {
+                throw new _GenoExternMismatch(_genoExternWhere(path) + "expected "
+                    + _genoJsonOneOf(described[1]) + ", got " + _GENO_JSON.stringify(value));
+            }
+            return _GENO_JSON_CTORS.get(shape[2] + "." + value)();
+        }
+        const entries = new _GENO_MAP(_genoExternEntries(value, path));
+        if (described[0] === "record") {
+            return _GENO_JSON_CTORS.get(shape[2] + "." + described[1])(
+                ..._genoExternFields(entries, described[2], types, path, depth));
+        }
+        if (!entries.has("type")) {
+            throw new _GenoExternMismatch(_genoExternWhere(path) + 'missing field "type"');
+        }
+        const chosen = entries.get("type");
+        const typePath = [path, ".type"];
+        if (typeof chosen !== "string") _genoExternMismatch(typePath, "String", chosen);
+        _genoExternSize("String", _stringLength(chosen));
+        for (const [constructor, fields] of described[1]) {
+            if (constructor === chosen) {
+                return _GENO_JSON_CTORS.get(shape[2] + "." + constructor)(
+                    ..._genoExternFields(entries, fields, types, path, depth));
+            }
+        }
+        throw new _GenoExternMismatch(_genoExternWhere(typePath) + "expected "
+            + _genoJsonOneOf(described[1].map((variant) => variant[0]))
+            + ", got " + _GENO_JSON.stringify(chosen));
     }
     return _genoExternJsonFromHost(value, path, depth);
 }
@@ -5531,39 +5620,81 @@ function _genoExternErrorText(e) {
     return _GENO_STRING(e);
 }
 
-function _genoExternCall(name, binding, args, params, result) {
+function _genoExternPrepare(name, binding, args, params, typeMap) {
+    if (binding === null) {
+        throw new _GenoExternFailure("Extern function '" + name
+            + "' has no js binding, so it cannot run on this backend");
+    }
+    let hostArgs;
+    try {
+        hostArgs = args.map((value, index) => _genoExternToHost(value, params[index], typeMap, 0));
+    } catch (e) {
+        if (!(e instanceof _GenoExternMismatch)) throw e;
+        throw new _GenoExternFailure("Extern function '" + name + "' got " + e.message);
+    }
+    const host = _genoExternLoad(name, binding);
+    return [host, hostArgs];
+}
+
+function _genoExternCallError(name, fallible, e) {
+    const detail = _genoExternErrorText(e);
+    if (fallible) {
+        _genoExternSize("String", _stringLength(detail));
+        return Err(detail);
+    }
+    throw new _GenoExternFailure("Extern function '" + name + "' failed: " + detail);
+}
+
+function _genoExternConvertResult(name, value, okShape, fallible, typeMap) {
+    let converted;
+    try {
+        converted = _genoExternFromHost(value, okShape, null, 0, typeMap);
+    } catch (e) {
+        if (e instanceof _GenoExternMismatch) {
+            throw new _GenoExternFailure("Extern function '" + name
+                + "' returned a value that is not " + _genoExternTypeText(okShape) + ": " + e.message);
+        }
+        if (e && typeof e === "object" && _GENO_EXTERN_LIMIT_ERRORS.has(e)) throw e;
+        throw new _GenoExternFailure("Extern function '" + name + "' failed: "
+            + _genoExternErrorText(e));
+    }
+    return fallible ? Ok(converted) : converted;
+}
+
+function _genoExternCall(name, binding, args, params, result, types = null) {
     _requireCap("ffi", name);
     try {
-        if (binding === null) {
-            throw new _GenoExternFailure("Extern function '" + name
-                + "' has no js binding, so it cannot run on this backend");
-        }
-        const host = _genoExternLoad(name, binding);
-        let hostArgs;
-        try {
-            hostArgs = args.map((value, index) => _genoExternToHost(value, params[index]));
-        } catch (e) {
-            if (!(e instanceof _GenoExternMismatch)) throw e;
-            throw new _GenoExternFailure("Extern function '" + name + "' got " + e.message);
-        }
+        const typeMap = _genoExternTypes(types);
+        const fallible = result[0] === "extern_result";
+        const okShape = fallible ? result[1] : result;
+        const [host, hostArgs] = _genoExternPrepare(name, binding, args, params, typeMap);
         let value;
         try {
             value = host.fn.apply(host.owner, hostArgs);
         } catch (e) {
-            throw new _GenoExternFailure("Extern function '" + name + "' failed: "
-                + _genoExternErrorText(e));
+            return _genoExternCallError(name, fallible, e);
         }
+        return _genoExternConvertResult(name, value, okShape, fallible, typeMap);
+    } catch (e) {
+        if (e instanceof _GenoExternFailure) panic(e.message);
+        throw e;
+    }
+}
+
+async function _genoExternCallAsync(name, binding, args, params, result, types = null) {
+    _requireCap("ffi", name);
+    try {
+        const typeMap = _genoExternTypes(types);
+        const fallible = result[0] === "extern_result";
+        const okShape = fallible ? result[1] : result;
+        const [host, hostArgs] = _genoExternPrepare(name, binding, args, params, typeMap);
+        let value;
         try {
-            return _genoExternFromHost(value, result, null, 0);
+            value = await host.fn.apply(host.owner, hostArgs);
         } catch (e) {
-            if (e instanceof _GenoExternMismatch) {
-                throw new _GenoExternFailure("Extern function '" + name
-                    + "' returned a value that is not " + _genoExternTypeText(result) + ": " + e.message);
-            }
-            if (e && typeof e === "object" && _GENO_EXTERN_LIMIT_ERRORS.has(e)) throw e;
-            throw new _GenoExternFailure("Extern function '" + name + "' failed: "
-                + _genoExternErrorText(e));
+            return _genoExternCallError(name, fallible, e);
         }
+        return _genoExternConvertResult(name, value, okShape, fallible, typeMap);
     } catch (e) {
         if (e instanceof _GenoExternFailure) panic(e.message);
         throw e;
