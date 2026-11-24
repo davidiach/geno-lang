@@ -1380,12 +1380,32 @@ class Compiler(BaseCompiler, ASTVisitor):
 
         for variant in defn.variants:
             self._compile_variant(defn.name, defn.type_params, variant)
+        scope = defn._json_constructor_scope or f".{defn.name}"
         if self._registers_json_constructors:
-            scope = defn._json_constructor_scope
             for variant in defn.variants:
                 self._writeln(
                     f"_GENO_JSON_CTORS[{(scope, variant.name)!r}] = "
                     f"{self._mangle_name(variant.name)}"
+                )
+        for variant in defn.variants:
+            if not variant.field_defaults:
+                continue
+            field_types = dict(variant.fields)
+            for field_name, default_expr in variant.field_defaults.items():
+                helper = self._fresh_temp()
+                compiled_default = f"_geno_deepcopy({self._compile_expr(default_expr)})"
+                expected = getattr(
+                    default_expr, "_expected_runtime_type", field_types[field_name]
+                )
+                compiled_default = self._promote_expr_to_expected_float(
+                    compiled_default, expected, default_expr
+                )
+                self._writeln(f"def {helper}():")
+                self._indent()
+                self._writeln(f"return {compiled_default}")
+                self._dedent()
+                self._writeln(
+                    f"_GENO_FIELD_DEFAULTS[{(scope, variant.name, field_name)!r}] = {helper}"
                 )
 
         # Emit a Union type alias so the type name resolves in annotations
@@ -3938,6 +3958,11 @@ class Compiler(BaseCompiler, ASTVisitor):
                 return cast(str, func_name)
             return f"(lambda {params}: {body})"
 
+    def _compile_field_default_call(
+        self, scope: str, constructor: str, field_name: str
+    ) -> str:
+        return f"_GENO_FIELD_DEFAULTS[{(scope, constructor, field_name)!r}]()"
+
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
         """Compile a constructor call."""
         if expr.constructor == "None":
@@ -3946,6 +3971,8 @@ class Compiler(BaseCompiler, ASTVisitor):
         reordered = self._compile_named_constructor_call(expr)
         if reordered is not None:
             names, values, call = reordered
+            if not names:
+                return call
             return f"(lambda {', '.join(names)}: {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
         return f"{self._mangle_name(expr.constructor)}({args})"

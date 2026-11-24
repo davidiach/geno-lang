@@ -38,10 +38,12 @@ class InterpreterJsonOps:
         *,
         extern_size: Callable[[str, int], None] | None = None,
         extern_int: Callable[[int], None] | None = None,
+        default_value: Callable[[str, str, str], Any] | None = None,
     ) -> None:
         self._builtins = builtins
         self.extern_size = extern_size
         self.extern_int = extern_int
+        self._default_value = default_value
 
     def tag(self, node: ConstructorValue) -> str:
         return node.constructor
@@ -83,8 +85,12 @@ class InterpreterJsonOps:
         self, scope: str, constructor: str, fields: tuple, values: list[Any]
     ) -> ConstructorValue:
         return ConstructorValue(
-            constructor, {name: value for (name, _), value in zip(fields, values)}
+            constructor, {field[0]: value for field, value in zip(fields, values)}
         )
+
+    def default_value(self, scope: str, constructor: str, field_name: str) -> Any:
+        assert self._default_value is not None
+        return self._default_value(scope, constructor, field_name)
 
     def is_variant(self, value: Any, constructor: str, scope: str = "") -> bool:
         return isinstance(value, ConstructorValue) and value.constructor == constructor
@@ -109,13 +115,14 @@ def decode(
     *,
     check_size: Callable[[int], None],
     step: Callable[[], None],
+    default_value: Callable[[str, str, str], Any] | None = None,
 ):
     """``json_decode(text)`` for the type *codec* describes."""
     return _runtime.json_decode(
         text,
         codec.shape,
         codec.types,
-        InterpreterJsonOps(builtins),
+        InterpreterJsonOps(builtins, default_value=default_value),
         builtins["json_parse"],
         check_size,
         step,

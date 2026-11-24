@@ -741,27 +741,49 @@ class BaseCompiler(ABC):
         """Compile one call argument; backends may widen it to its parameter."""
         return self._compile_expr(value)
 
+    def _compile_field_default_call(
+        self, scope: str, constructor: str, field_name: str
+    ) -> str:
+        raise NotImplementedError
+
     def _compile_named_constructor_call(
         self, expr: ConstructorCall
     ) -> tuple[list[str], list[str], str] | None:
-        """Bind source-order values for ``Point(y: a, x: b)``, then place them.
+        """Bind source-order values for ``Point(y: a, x: b)`` or defaulted fields.
 
-        Returns ``None`` when the arguments are already in field order, so the
-        caller emits a plain positional call.
+        Returns ``None`` when the arguments are already positional in exact
+        field order with no omitted defaults, so the caller emits a plain call.
         """
-        if expr.argument_names is None:
-            return None
         order = expr.argument_order
         if order is None:
-            raise ValueError(
-                f"Named arguments to constructor {expr.constructor} need type "
-                "checking before compilation"
-            )
-        if order == list(range(len(expr.arguments))):
+            if expr.argument_names is not None:
+                raise ValueError(
+                    f"Named arguments to constructor {expr.constructor} need type "
+                    "checking before compilation"
+                )
+            return None
+        has_defaults = any(index == -1 for index in order)
+        if not has_defaults and order == list(range(len(expr.arguments))):
             return None
         names = [self._fresh_temp() for _ in expr.arguments]
         values = [self._compile_expr(arg) for arg in expr.arguments]
-        placed = ", ".join(names[index] for index in order)
+        field_names = expr._constructor_field_names
+        if not field_names:
+            variant = self._constructor_to_variant.get(expr.constructor)
+            field_names = (
+                tuple(fn for fn, _ in variant.fields) if variant is not None else ()
+            )
+        placed_parts: list[str] = []
+        for field_name, index in zip(field_names, order):
+            if index == -1:
+                placed_parts.append(
+                    self._compile_field_default_call(
+                        expr._constructor_scope, expr.constructor, field_name
+                    )
+                )
+            else:
+                placed_parts.append(names[index])
+        placed = ", ".join(placed_parts)
         return names, values, f"{self._mangle_name(expr.constructor)}({placed})"
 
     @staticmethod

@@ -1,20 +1,23 @@
-"""Named constructor arguments (``Point(x: 1, y: 2)``)."""
+"""Named and defaulted constructor arguments (``Point(x: 1, y: 2)``)."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 
 
 def constructor_argument_order(
     constructor: str,
     argument_names: Sequence[str | None],
     field_names: Sequence[str],
+    *,
+    default_fields: Collection[str] = (),
 ) -> list[int]:
     """Return, for each field in declaration order, its argument's source index.
 
     Positional arguments fill fields from the left and must come before any
     named argument, as in function calls.  Arguments are still evaluated in
-    source order; only their placement follows the fields.  Raises
+    source order; only their placement follows the fields.  An omitted field
+    listed in ``default_fields`` maps to ``-1`` (evaluate its default).  Raises
     ``ValueError`` with a user-facing message for an unknown, repeated or
     missing field.
     """
@@ -42,10 +45,19 @@ def constructor_argument_order(
                 f"Field '{name}' is given more than once in constructor {constructor}"
             )
         source_index[name] = position
-    missing = [field for field in field_names if field not in source_index]
+    missing = [
+        field
+        for field in field_names
+        if field not in source_index and field not in default_fields
+    ]
     if missing:
+        if not seen_named and not default_fields:
+            raise ValueError(
+                f"Constructor {constructor} expects {len(field_names)} "
+                f"arguments, got {len(argument_names)}"
+            )
         raise ValueError(
             f"Constructor {constructor} is missing field "
             + ", ".join(f"'{field}'" for field in missing)
         )
-    return [source_index[field] for field in field_names]
+    return [source_index.get(field, -1) for field in field_names]

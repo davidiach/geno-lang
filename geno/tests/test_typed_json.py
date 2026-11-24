@@ -868,3 +868,344 @@ def test_a_lone_surrogate_is_escaped_as_javascript_writes_it(backend):
         '38 $["\\ud800\u00e9"]: expected Int, got String\n'
         '40 $["\\udfff"][1]: expected Int, got String\n'
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: @json(...) wire attributes and default record field values
+# ---------------------------------------------------------------------------
+
+
+RENAME_AND_FIELDS_PROGRAM = """
+@json(rename_all: "camelCase")
+type ApiUser = ApiUser(
+    user_id: Int,
+    display_name: String,
+    @json(name: "created-at") created_at: String,
+    @json(name: "type") kind: String
+)
+
+@json(rename_all: "snake_case")
+type TaskState = InProgress | WaitingForReview | @json(name: "done!") Done
+
+@json(rename_all: "camelCase")
+type Webhook =
+    | @json(name: "payment.succeeded") PaymentSucceeded(amount_cents: Int, customer_id: String)
+    | AccountClosed(closed_at: String)
+
+func main() -> Unit with io
+    let user = ApiUser(user_id: 7, display_name: "Ada", created_at: "2026-01-01", kind: "admin")
+    let encoded_user = json_encode(user)
+    print(encoded_user)
+    print(json_decode[ApiUser](encoded_user) == Ok(user))
+
+    let state: TaskState = WaitingForReview
+    print(json_encode(state))
+    print(json_decode[TaskState]("\\"in_progress\\"") == Ok(InProgress))
+    print(json_decode[TaskState]("\\"done!\\"") == Ok(Done))
+    print(json_decode[TaskState]("\\"Done\\""))
+
+    let ev: Webhook = PaymentSucceeded(amount_cents: 4200, customer_id: "cus_1")
+    let encoded_ev = json_encode(ev)
+    print(encoded_ev)
+    print(json_decode[Webhook](encoded_ev) == Ok(ev))
+    print(json_decode[Webhook]("{\\"type\\": \\"AccountClosed\\", \\"closedAt\\": 123}"))
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_json_rename_all_and_custom_field_and_variant_names(backend):
+    assert backend(RENAME_AND_FIELDS_PROGRAM) == (
+        '{"userId":7,"displayName":"Ada","created-at":"2026-01-01","type":"admin"}\n'
+        "true\n"
+        '"waiting_for_review"\n'
+        "true\n"
+        "true\n"
+        'Err(error: "$: expected one of \\"in_progress\\", \\"waiting_for_review\\", \\"done!\\", got \\"Done\\"")\n'
+        '{"type":"payment.succeeded","amountCents":4200,"customerId":"cus_1"}\n'
+        "true\n"
+        'Err(error: "$.closedAt: expected String, got Int")\n'
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize(
+    ("style", "expected_wire"),
+    [
+        ("camelCase", "maxRetryCount"),
+        ("snake_case", "max_retry_count"),
+        ("kebab-case", "max-retry-count"),
+        ("PascalCase", "MaxRetryCount"),
+        ("SCREAMING_SNAKE_CASE", "MAX_RETRY_COUNT"),
+    ],
+)
+def test_json_rename_all_supports_every_case_style(backend, style, expected_wire):
+    source = f"""
+@json(rename_all: "{style}")
+type Opts = Opts(max_retry_count: Int)
+
+func main() -> Unit with io
+    let o = Opts(max_retry_count: 3)
+    let text = json_encode(o)
+    print(text)
+    print(json_decode[Opts](text) == Ok(o))
+end func
+"""
+    assert backend(source) == f'{{"{expected_wire}":3}}\ntrue\n'
+
+
+UNKNOWN_REJECT_PROGRAM = """
+@json(rename_all: "camelCase", unknown: "reject")
+type StrictUser = StrictUser(
+    first_name: String,
+    retries: Int = 2,
+    note: Option[String]
+)
+
+@json(unknown: "reject")
+type StrictEvent = Ping(seq: Int) | Halt
+
+@json(unknown: "ignore")
+type LenientUser = LenientUser(first_name: String)
+
+func main() -> Unit with io
+    print(json_decode[StrictUser]("{\\"firstName\\": \\"Ada\\"}"))
+    print(json_decode[StrictUser]("{\\"firstName\\": \\"Ada\\", \\"extra\\": 1}"))
+    print(json_decode[StrictEvent]("{\\"type\\": \\"Ping\\", \\"seq\\": 5}"))
+    print(json_decode[StrictEvent]("{\\"type\\": \\"Ping\\", \\"seq\\": 5, \\"bogus\\": true}"))
+    print(json_decode[LenientUser]("{\\"first_name\\": \\"Ada\\", \\"extra\\": 1}"))
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_json_unknown_reject_and_ignore_policies(backend):
+    assert backend(UNKNOWN_REJECT_PROGRAM) == (
+        'Ok(value: StrictUser(first_name: "Ada", retries: 2, note: None))\n'
+        'Err(error: "$: unknown field \\"extra\\"")\n'
+        "Ok(value: Ping(seq: 5))\n"
+        'Err(error: "$: unknown field \\"bogus\\"")\n'
+        'Ok(value: LenientUser(first_name: "Ada"))\n'
+    )
+
+
+DEFAULT_FIELDS_PROGRAM = """
+let default_port: Int = 8080
+
+func doubled_default() -> Int
+    example () -> 6
+    return 3 * 2
+end func
+
+@json(rename_all: "camelCase")
+type Config = Config(
+    host: String = "127.0.0.1",
+    port: Int = default_port,
+    max_retries: Int = doubled_default(),
+    timeout_sec: Float = 2,
+    tags: List[String] = [],
+    nick: Option[String] = Some("anon"),
+    api_key: String
+)
+
+type Box[T] = Box(items: List[T] = [], label: String = "empty")
+
+func main() -> Unit with io
+    // Constructor calls omitting defaulted fields (required field after defaults!)
+    let c1 = Config(api_key: "k1")
+    print(c1)
+    let c2 = Config(host: "0.0.0.0", port: 9000, api_key: "k2")
+    print(c2)
+
+    // Mutable defaults produce fresh independent containers per call
+    var a = Config(api_key: "a")
+    var b = Config(api_key: "b")
+    a.tags = append(a.tags, "prod")
+    print(length(a.tags))
+    print(length(b.tags))
+
+    // Generic record defaults
+    let box_int: Box[Int] = Box()
+    print(box_int)
+
+    // Typed JSON populates defaults when keys are omitted
+    match json_decode[Config]("{\\"apiKey\\": \\"k3\\"}") with
+        | Ok(decoded) ->
+            print(decoded == Config(api_key: "k3"))
+            print(decoded.timeout_sec)
+        | Err(e) -> print(e)
+    end match
+
+    // Explicit null on Option field overrides explicit default -> None
+    match json_decode[Config]("{\\"apiKey\\": \\"k4\\", \\"nick\\": null}") with
+        | Ok(decoded) -> print(decoded.nick)
+        | Err(e) -> print(e)
+    end match
+
+    // Explicit null on non-Option defaulted field still fails type validation
+    print(json_decode[Config]("{\\"apiKey\\": \\"k5\\", \\"port\\": null}"))
+end func
+"""
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_record_default_field_values_in_constructors_and_typed_json(backend):
+    assert backend(DEFAULT_FIELDS_PROGRAM) == (
+        'Config(host: "127.0.0.1", port: 8080, max_retries: 6, timeout_sec: 2.0, '
+        'tags: [], nick: Some(value: "anon"), api_key: "k1")\n'
+        'Config(host: "0.0.0.0", port: 9000, max_retries: 6, timeout_sec: 2.0, '
+        'tags: [], nick: Some(value: "anon"), api_key: "k2")\n'
+        "1\n"
+        "0\n"
+        'Box(items: [], label: "empty")\n'
+        "true\n"
+        "2.0\n"
+        "None\n"
+        'Err(error: "$.port: expected Int, got null")\n'
+    )
+
+
+@pytest.mark.parametrize(
+    "run_project",
+    [
+        _interpreter_project_output,
+        _compiled_python_project_output,
+        pytest.param(_compiled_js_project_output, marks=needs_node),
+    ],
+)
+def test_imported_module_json_attrs_and_field_defaults_agree_across_backends(
+    run_project,
+):
+    schema = """
+let base_port: Int = 3000
+
+@json(rename_all: "camelCase", unknown: "reject")
+export type ServiceCfg = ServiceCfg(
+    service_name: String,
+    listen_port: Int = base_port + 1
+)
+"""
+    main = """
+import Schema
+
+func main() -> Unit with io
+    let cfg = ServiceCfg(service_name: "api")
+    let raw = json_encode(cfg)
+    print(raw)
+    print(json_decode[ServiceCfg]("{\\"serviceName\\": \\"api\\"}") == Ok(cfg))
+    print(json_decode[ServiceCfg]("{\\"serviceName\\": \\"api\\", \\"bad\\": 1}"))
+end func
+"""
+    assert run_project(main, {"Schema": schema}) == (
+        '{"serviceName":"api","listenPort":3001}\n'
+        "true\n"
+        'Err(error: "$: unknown field \\"bad\\"")\n'
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_code", "snippet"),
+    [
+        (
+            '@json(rename_all: "camelCase")\n'
+            'type Bad = Bad(user_id: Int, @json(name: "userId") other: Int)\n',
+            ErrorCode.TYPE_JSON_FORM,
+            'both map to JSON name "userId"',
+        ),
+        (
+            'type BadUnion = A(@json(name: "type") kind: String) | B\n',
+            ErrorCode.TYPE_JSON_FORM,
+            "conflicts with the union discriminator",
+        ),
+        (
+            'type BadEnum = @json(name: "same") First | @json(name: "same") Second\n',
+            ErrorCode.TYPE_JSON_FORM,
+            'both map to JSON tag "same"',
+        ),
+        (
+            'type BadDefault = BadDefault(port: Int = "oops")\n',
+            None,
+            "expected Int",
+        ),
+        (
+            "type Effectful = Effectful(n: Int = random_int(1, 5))\n",
+            ErrorCode.EFFECT_VIOLATION,
+            "must be pure",
+        ),
+        (
+            "type Loop = Loop(next: Loop = Loop())\n",
+            None,
+            "depends cyclically on itself",
+        ),
+    ],
+)
+def test_invalid_json_attributes_and_field_defaults_are_type_errors(
+    source, expected_code, snippet
+):
+    result = geno.check(source)
+    assert not result.ok
+    assert any(snippet in d.message for d in result.diagnostics), [
+        d.message for d in result.diagnostics
+    ]
+    if expected_code is not None:
+        assert any(d.code == expected_code for d in result.diagnostics)
+
+
+@pytest.mark.parametrize(
+    ("source", "snippet"),
+    [
+        ("@json()\ntype A = A(x: Int)\n", "requires at least one option"),
+        ('@json(foo: "bar")\ntype A = A(x: Int)\n', "Unknown @json option 'foo'"),
+        (
+            '@json(rename_all: "weird")\ntype A = A(x: Int)\n',
+            'Invalid @json rename_all value "weird"',
+        ),
+        (
+            '@json(unknown: "drop")\ntype A = A(x: Int)\n',
+            'Invalid @json unknown value "drop"',
+        ),
+        (
+            '@json(rename_all: "camelCase")\ntype Alias = Int\n',
+            "not type aliases",
+        ),
+        (
+            '@json(rename_all: "camelCase")\nfunc f() -> Int\n    example () -> 1\n    return 1\nend func\n',
+            "only valid on type definitions",
+        ),
+        (
+            'type A = A(@json(name: "") x: Int)\n',
+            "must not be empty",
+        ),
+        (
+            'type A = A(@json(rename_all: "camelCase") x: Int)\n',
+            "Unknown @json option 'rename_all' on field",
+        ),
+    ],
+)
+def test_malformed_json_attributes_are_parse_errors(source, snippet):
+    from geno.parser import ParseError, parse
+
+    with pytest.raises(ParseError) as raised:
+        parse(source)
+    assert snippet in str(raised.value)
+
+
+def test_formatter_preserves_json_attributes_and_default_fields():
+    from geno.formatter import format_source
+
+    messy = (
+        '@json(rename_all:"camelCase",unknown:"reject")\n'
+        "export type Event = Event(\n"
+        '@json(name:"created-at") created_at:String,\n'
+        "retries:Int=3,\n"
+        ")\n"
+    )
+    formatted = format_source(messy)
+    assert formatted == (
+        '@json(rename_all: "camelCase", unknown: "reject")\n'
+        "export type Event = Event(\n"
+        '    @json(name: "created-at") created_at: String,\n'
+        "    retries: Int = 3,\n"
+        ")\n"
+    )
+    assert format_source(formatted) == formatted

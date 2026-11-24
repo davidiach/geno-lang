@@ -8,6 +8,8 @@ Produces an Abstract Syntax Tree from a token stream.
 
 from __future__ import annotations
 
+from typing import Any
+
 from .ast_nodes import (
     AssertStatement,
     Definition,
@@ -31,10 +33,12 @@ from .ast_nodes import (
     TraitMethodSig,
     TupleExpr,
     TypeAnnotation,
+    TypeDef,
     constant_initializer_error,
 )
 from .diagnostics import ErrorCode, Fix, TextEdit, insert_fix
 from .extern import EXTERN_TARGETS, FFI, binding_error, binding_form
+from .json_shape import VALID_JSON_RENAME_ALL, VALID_JSON_UNKNOWN
 from .parser_base import (
     ParseError,
     ParseErrors,
@@ -116,10 +120,14 @@ class Parser(
 
     def _parse_definition(self) -> Definition:
         """Parse a top-level definition (func, type, trait, impl, export, or import)."""
-        # Check for @untested annotation
-        untested_reason = None
+        untested_reason: str | None = None
+        json_attrs: dict[str, str] | None = None
         if self._check(TokenType.AT):
-            untested_reason = self._parse_untested_annotation()
+            attr_name, attr_val = self._parse_top_level_annotation()
+            if attr_name == "untested":
+                untested_reason = str(attr_val)
+            else:
+                json_attrs = attr_val
 
         # Check for export keyword
         is_exported = False
@@ -128,13 +136,26 @@ class Parser(
                 raise self._error("@untested must come after 'export', not before")
             self._advance()  # consume 'export'
             is_exported = True
-            # Allow @untested after export
             if self._check(TokenType.AT):
-                untested_reason = self._parse_untested_annotation()
+                attr_name, attr_val = self._parse_top_level_annotation()
+                if attr_name == "untested":
+                    if json_attrs is not None:
+                        raise self._error(
+                            "@json annotation is only valid on type definitions"
+                        )
+                    untested_reason = str(attr_val)
+                else:
+                    if json_attrs is not None:
+                        raise self._error(
+                            "Duplicate @json annotation on type definition"
+                        )
+                    json_attrs = attr_val
 
         if self._at_extern_def():
             # `extern` is contextual: it is a declaration word only before
             # `func` at the top level, so it stays a valid name elsewhere.
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error(
                     "@untested is not needed on an extern function: it has no "
@@ -151,6 +172,8 @@ class Parser(
         ):
             raise self._error("Write 'async extern func', not 'extern async func'")
         if self._check(TokenType.ASYNC):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             async_location = self._current().location
             self._advance()  # consume 'async'
             if self._at_extern_def():
@@ -167,6 +190,8 @@ class Parser(
             defn.exported = is_exported
             return defn
         if self._check(TokenType.FUNC):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             defn = self._parse_function_def()
             defn.untested_reason = untested_reason
             defn.exported = is_exported
@@ -175,33 +200,50 @@ class Parser(
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             type_defn = self._parse_type_def()
+            if json_attrs is not None:
+                if not isinstance(type_defn, TypeDef):
+                    raise self._error(
+                        "@json annotation is only valid on type definitions, not type aliases"
+                    )
+                type_defn.json_rename_all = json_attrs.get("rename_all")
+                type_defn.json_unknown = json_attrs.get("unknown")
             type_defn.exported = is_exported
             return type_defn
         elif self._check(TokenType.IMPORT):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             if is_exported:
                 raise self._error("'export' cannot be used with 'import'")
             return self._parse_import()
         elif self._check(TokenType.TRAIT):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             if is_exported:
                 raise self._error("'export' on traits is not yet supported")
             return self._parse_trait_def()
         elif self._check(TokenType.IMPL):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             if is_exported:
                 raise self._error("'export' cannot be used with 'impl'")
             return self._parse_impl_def()
         elif self._check(TokenType.TEST):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             if is_exported:
                 raise self._error("'export' cannot be used with 'test'")
             return self._parse_test_block()
         elif self._check(TokenType.LET):
+            if json_attrs is not None:
+                raise self._error("@json annotation is only valid on type definitions")
             if untested_reason is not None:
                 raise self._error("@untested annotation is only valid on functions")
             if is_exported:
@@ -259,20 +301,69 @@ class Parser(
             value=value,
         )
 
-    def _parse_untested_annotation(self) -> str:
-        """Parse: @untested("reason string")"""
+    def _parse_top_level_annotation(self) -> tuple[str, Any]:
+        """Parse a top-level annotation: ``@untested("...")`` or ``@json(...)``."""
         self._expect(TokenType.AT)
         name = self._expect(TokenType.IDENTIFIER, "Expected annotation name after '@'")
-        if name.value != "untested":
-            raise self._error(
-                f"Unknown annotation '@{name.value}', expected '@untested'"
+        if name.value == "untested":
+            self._expect(TokenType.LPAREN, "Expected '(' after '@untested'")
+            reason = self._expect(
+                TokenType.STRING, "Expected reason string in @untested()"
             )
-        self._expect(TokenType.LPAREN, "Expected '(' after '@untested'")
-        reason = self._expect(TokenType.STRING, "Expected reason string in @untested()")
-        if not reason.value:
-            raise self._error("@untested reason string must not be empty")
-        self._expect(TokenType.RPAREN, "Expected ')' after reason string")
-        return str(reason.value)
+            if not reason.value:
+                raise self._error("@untested reason string must not be empty")
+            self._expect(TokenType.RPAREN, "Expected ')' after reason string")
+            return ("untested", str(reason.value))
+        if name.value == "json":
+            return ("json", self._parse_type_json_options())
+        raise self._error(
+            f"Unknown annotation '@{name.value}', expected '@untested' or '@json'"
+        )
+
+    def _parse_type_json_options(self) -> dict[str, str]:
+        """Parse type-level ``@json(rename_all: "...", unknown: "...")``."""
+        self._expect(TokenType.LPAREN, "Expected '(' after '@json'")
+        if self._check(TokenType.RPAREN):
+            raise self._error(
+                "@json(...) requires at least one option: rename_all or unknown"
+            )
+        options: dict[str, str] = {}
+        while True:
+            key_tok = self._expect(
+                TokenType.IDENTIFIER,
+                "Expected option name in @json(...) ('rename_all' or 'unknown')",
+            )
+            key = str(key_tok.value)
+            if key not in ("rename_all", "unknown"):
+                raise self._error(
+                    f"Unknown @json option '{key}' on type definition; "
+                    "expected 'rename_all' or 'unknown'"
+                )
+            if key in options:
+                raise self._error(f"Duplicate @json option '{key}'")
+            self._expect(TokenType.COLON, f"Expected ':' after '{key}' in @json(...)")
+            val_tok = self._expect(
+                TokenType.STRING,
+                f"Expected string value for @json option '{key}'",
+            )
+            val = str(val_tok.value)
+            if key == "rename_all" and val not in VALID_JSON_RENAME_ALL:
+                allowed = ", ".join(f'"{item}"' for item in VALID_JSON_RENAME_ALL)
+                raise self._error(
+                    f'Invalid @json rename_all value "{val}"; expected one of {allowed}'
+                )
+            if key == "unknown" and val not in VALID_JSON_UNKNOWN:
+                allowed = ", ".join(f'"{item}"' for item in VALID_JSON_UNKNOWN)
+                raise self._error(
+                    f'Invalid @json unknown value "{val}"; expected one of {allowed}'
+                )
+            options[key] = val
+            if not self._match(TokenType.COMMA):
+                break
+            if self._check(TokenType.RPAREN):
+                break
+        self._expect(TokenType.RPAREN, "Expected ')' after @json options")
+        return options
 
     def _parse_import(self) -> ImportStatement:
         """Parse: import ModuleName [as Alias]"""

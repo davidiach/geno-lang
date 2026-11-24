@@ -537,6 +537,9 @@ class Interpreter:
         """
         self.global_env = Environment()
         self.type_defs: dict[str, TypeDef] = {}
+        self._field_default_entries: dict[
+            tuple[str, str, str], tuple[Expression, Any, Environment]
+        ] = {}
         self.functions: dict[str, FunctionDef] = {}
         # The closure each entry in ``functions`` names, for example checks:
         # an imported function is not bound in the entry program's scope
@@ -1683,8 +1686,18 @@ class Interpreter:
                         for v in old_def.variants:
                             self._constructor_to_type.pop(v.name, None)
                     self.type_defs[defn.name] = defn
+                    scope = defn._json_constructor_scope or f".{defn.name}"
                     for variant in defn.variants:
                         self._constructor_to_type[variant.name] = defn.name
+                        field_types_map = dict(variant.fields)
+                        for fname, default_expr in variant.field_defaults.items():
+                            self._field_default_entries[
+                                (scope, variant.name, fname)
+                            ] = (
+                                default_expr,
+                                field_types_map[fname],
+                                self.global_env,
+                            )
                 elif isinstance(defn, FunctionDef):
                     self.functions[defn.name] = defn
                     tail_plan = mark_self_tail_calls(defn)
@@ -1813,8 +1826,16 @@ class Interpreter:
                     for v in old_def.variants:
                         self._constructor_to_type.pop(v.name, None)
                 self.type_defs[defn.name] = defn
+                scope = defn._json_constructor_scope or f"{name}.{defn.name}"
                 for variant in defn.variants:
                     self._constructor_to_type[variant.name] = defn.name
+                    field_types_map = dict(variant.fields)
+                    for fname, default_expr in variant.field_defaults.items():
+                        self._field_default_entries[(scope, variant.name, fname)] = (
+                            default_expr,
+                            field_types_map[fname],
+                            module_env,
+                        )
 
         # Module constants stay private to the module: they are bound in the
         # module's own environment, which its closures capture, and are never
@@ -2705,6 +2726,7 @@ class Interpreter:
                         "Decoded JSON", size, expr.location
                     ),
                     step=lambda: self._step(expr.location),
+                    default_value=self._eval_field_default,
                 )
             else:
                 indent = arguments[1] if name == "json_encode_pretty" else None
@@ -3668,6 +3690,19 @@ class Interpreter:
             env=env,
         )
 
+    def _eval_field_default(self, scope: str, constructor: str, field_name: str) -> Any:
+        """Evaluate a type variant field's default expression in its defining scope."""
+        default_expr, field_type, defining_env = self._field_default_entries[
+            (scope, constructor, field_name)
+        ]
+        value = self.eval_expr(default_expr, defining_env)
+        value = _promote_int_to_expected_float(
+            value,
+            getattr(default_expr, "_expected_runtime_type", field_type),
+            default_expr,
+        )
+        return self._deep_copy_value(value)
+
     def _eval_constructor_call(
         self, expr: ConstructorCall, env: Environment
     ) -> ConstructorValue:
@@ -3685,7 +3720,8 @@ class Interpreter:
             for variant in type_def.variants:
                 if variant.name == expr.constructor:
                     field_names = [field_name for field_name, _ in variant.fields]
-                    if expr.argument_names is None:
+                    default_fields = set(variant.field_defaults.keys())
+                    if expr.argument_names is None and not default_fields:
                         if len(expr.arguments) != len(variant.fields):
                             raise RuntimeError(
                                 f"Constructor {expr.constructor} expects "
@@ -3697,16 +3733,30 @@ class Interpreter:
                     else:
                         try:
                             order = constructor_argument_order(
-                                expr.constructor, expr.argument_names, field_names
+                                expr.constructor,
+                                expr.argument_names
+                                if expr.argument_names is not None
+                                else [None] * len(expr.arguments),
+                                field_names,
+                                default_fields=default_fields,
                             )
                         except ValueError as exc:
                             raise RuntimeError(str(exc), expr.location) from None
-                    # Evaluate in source order, then place by field.
+                    # Evaluate supplied arguments in source order, then place by field.
                     values = [self.eval_expr(arg, env) for arg in expr.arguments]
-                    fields = {
-                        field_name: values[index]
-                        for field_name, index in zip(field_names, order)
-                    }
+                    scope = (
+                        expr._constructor_scope
+                        or type_def._json_constructor_scope
+                        or f".{type_def.name}"
+                    )
+                    fields: dict[str, Any] = {}
+                    for field_name, index in zip(field_names, order):
+                        if index == -1:
+                            fields[field_name] = self._eval_field_default(
+                                scope, expr.constructor, field_name
+                            )
+                        else:
+                            fields[field_name] = values[index]
 
                     return ConstructorValue(expr.constructor, fields)
 

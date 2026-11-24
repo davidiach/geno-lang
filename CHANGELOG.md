@@ -13,6 +13,17 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- Real-world Typed JSON attributes and default record field values across all
+  three backends (interpreter, compiled Python, and compiled JavaScript):
+  - Type-level `@json(rename_all: ..., unknown: "ignore" | "reject")` supporting
+    `camelCase`, `snake_case`, `kebab-case`, `PascalCase`, and
+    `SCREAMING_SNAKE_CASE`, plus per-field and per-variant `@json(name: "...")`
+    overrides (including reserved wire names such as `"type"` on records).
+    Duplicate wire names and union discriminator collisions are rejected with
+    E332 at typecheck time.
+  - Pure, acyclic default field values on type variants (`host: String = "127.0.0.1"`),
+    filling omitted fields cleanly in both constructor calls and `json_decode[T]`
+    (evaluating fresh values per call/decode across module boundaries).
 - FFI v2 extensions to `extern func` on all three backends (interpreter,
   compiled Python and compiled JavaScript):
   - Fallible externs: a top-level `Result[T, String]` return type turns host

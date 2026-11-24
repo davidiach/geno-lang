@@ -586,3 +586,11 @@ path = "programs/diagnostic_extern_type.geno"
 kind = "diagnostic"
 targets = ["checker"]
 expected_diagnostics = ["E333"]
+
+[[cases]]
+id = "typed-json-attributes"
+path = "programs/typed_json_attributes.geno"
+kind = "run"
+targets = ["interpreter", "python", "js"]
+capabilities = ["print"]
+expected_stdout = "{\"eventId\":1,\"created-at\":\"2026-01-01\",\"type\":\"deploy\",\"retryCount\":3,\"note\":\"default\"}\ntrue\ntrue\nErr(error: \"$: unknown field \\\"extra\\\"\")\n\"in_progress\"\ntrue\n"

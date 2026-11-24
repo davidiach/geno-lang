@@ -21,15 +21,16 @@ A shape is a tuple whose first item names its kind::
 and ``types`` maps each user type's key (its written form, ``Box[Int]``) to
 one of::
 
-    ("record", constructor, ((field, shape), ...))   # one constructor with fields
-    ("enum", (constructor, ...))                      # every constructor nullary
-    ("union", ((constructor, ((field, shape), ...)), ...))
+    ("record", constructor, ((field, shape, wire, has_default), ...), reject_unknown)
+    ("enum", ((constructor, wire), ...))
+    ("union", ((constructor, wire, ((field, shape, wire, has_default), ...)), ...), reject_unknown)
 
 A user type refers to itself through its key, so a recursive type is finite.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -69,6 +70,93 @@ Shape = tuple[Any, ...]
 DISCRIMINATOR = "type"
 RESULT_OK = "ok"
 RESULT_ERR = "err"
+
+VALID_JSON_RENAME_ALL = (
+    "camelCase",
+    "snake_case",
+    "kebab-case",
+    "PascalCase",
+    "SCREAMING_SNAKE_CASE",
+)
+VALID_JSON_UNKNOWN = ("ignore", "reject")
+
+_WORD_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|\d|$)|[A-Z]?[a-z]+|\d+")
+
+
+def rename_wire_name(name: str, style: str) -> str:
+    """Convert a Geno field or enum variant name to the requested JSON wire case."""
+    words = _WORD_RE.findall(name)
+    if not words:
+        return name
+    if style == "camelCase":
+        return str(
+            words[0].lower() + "".join(w[:1].upper() + w[1:].lower() for w in words[1:])
+        )
+    if style == "PascalCase":
+        return "".join(w[:1].upper() + w[1:].lower() for w in words)
+    if style == "snake_case":
+        return "_".join(w.lower() for w in words)
+    if style == "kebab-case":
+        return "-".join(w.lower() for w in words)
+    if style == "SCREAMING_SNAKE_CASE":
+        return "_".join(w.upper() for w in words)
+    return name
+
+
+def _variant_wire_name(info: TypeDefInfo, constructor: str, *, is_enum: bool) -> str:
+    explicit = info.variant_json_names.get(constructor)
+    if explicit is not None:
+        return explicit
+    if is_enum and info.json_rename_all is not None:
+        return rename_wire_name(constructor, info.json_rename_all)
+    return constructor
+
+
+def _field_wire_name(info: TypeDefInfo, constructor: str, field_name: str) -> str:
+    explicit = info.field_json_names.get((constructor, field_name))
+    if explicit is not None:
+        return explicit
+    if info.json_rename_all is not None:
+        return rename_wire_name(field_name, info.json_rename_all)
+    return field_name
+
+
+def validate_type_json_mapping(info: TypeDefInfo) -> str | None:
+    """Return why *info*'s ``@json`` wire mapping is invalid, or ``None``."""
+    if not info.variants:
+        return None
+    is_enum = all(not fields for fields in info.variants.values())
+    is_union = not is_enum and len(info.variants) > 1
+
+    if is_enum or is_union:
+        seen_tags: dict[str, str] = {}
+        for constructor in info.variants:
+            wire_tag = _variant_wire_name(info, constructor, is_enum=is_enum)
+            if wire_tag in seen_tags:
+                return (
+                    f"variants '{seen_tags[wire_tag]}' and '{constructor}' both map "
+                    f'to JSON tag "{wire_tag}"'
+                )
+            seen_tags[wire_tag] = constructor
+
+    if not is_enum:
+        for constructor, fields in info.variants.items():
+            seen_fields: dict[str, str] = {}
+            for field_name, _ in fields:
+                wire = _field_wire_name(info, constructor, field_name)
+                if is_union and wire == DISCRIMINATOR:
+                    return (
+                        f"field '{field_name}' of {constructor} maps to JSON name "
+                        f'"{DISCRIMINATOR}", which conflicts with the union discriminator'
+                    )
+                if wire in seen_fields:
+                    return (
+                        f"fields '{seen_fields[wire]}' and '{field_name}' of "
+                        f'{constructor} both map to JSON name "{wire}"'
+                    )
+                seen_fields[wire] = field_name
+    return None
+
 
 # Keep expanded generic instantiations and serialized codec literals bounded.
 # Even before an ADT can be looked up, its structural key may repeat part of
@@ -212,8 +300,22 @@ class _Builder:
         bindings = dict(zip(info.type_params, type_.type_args))
         if len(type_.type_args) != len(info.type_params):
             raise self.fail(type_, "its type arguments are not known", where)
+        mapping_error = validate_type_json_mapping(info)
+        if mapping_error is not None:
+            raise self.fail(type_, mapping_error, where)
         # Reserve the key first: a recursive field refers back to it.
         self.types[key] = ()
+        is_enum = all(not fields for fields in info.variants.values())
+        reject_unknown = info.json_unknown == "reject"
+        if is_enum:
+            self.types[key] = (
+                "enum",
+                tuple(
+                    (constructor, _variant_wire_name(info, constructor, is_enum=True))
+                    for constructor in info.variants
+                ),
+            )
+            return reference
         variants = []
         for constructor, fields in info.variants.items():
             described = []
@@ -225,15 +327,26 @@ class _Builder:
                             _substitute(field_type, bindings),
                             (*where, f"field '{name}' of {constructor}"),
                         ),
+                        _field_wire_name(info, constructor, name),
+                        (constructor, name) in info.field_defaults,
                     )
                 )
-            variants.append((constructor, tuple(described)))
-        if all(not fields for _, fields in variants):
-            self.types[key] = ("enum", tuple(name for name, _ in variants))
-        elif len(variants) == 1:
-            self.types[key] = ("record", variants[0][0], variants[0][1])
+            variants.append(
+                (
+                    constructor,
+                    _variant_wire_name(info, constructor, is_enum=False),
+                    tuple(described),
+                )
+            )
+        if len(variants) == 1:
+            self.types[key] = (
+                "record",
+                variants[0][0],
+                variants[0][2],
+                reject_unknown,
+            )
         else:
-            self.types[key] = ("union", tuple(variants))
+            self.types[key] = ("union", tuple(variants), reject_unknown)
         return reference
 
 
