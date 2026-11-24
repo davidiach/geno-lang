@@ -730,6 +730,9 @@ Fixed in the 0.7 release review:
 - Language-server rename, references and highlights returned duplicate,
   overlapping edits for a compound assignment's target (`total += x`,
   `arr[i] += x`, `p.x *= 2`); each use is now recorded once.
+- The `geno` command no longer prints a `BrokenPipeError` traceback when the
+  reader of its output goes away, as in `geno run --json app.geno | head`.
+  It stops writing and exits with status 1.
 
 ## [0.6.0] - 2026-10-25
 

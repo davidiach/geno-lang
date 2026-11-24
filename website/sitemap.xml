@@ -21,6 +21,7 @@
   <url><loc>https://geno-lang.org/docs/benchmark/perf-ratchets.html</loc></url>
   <url><loc>https://geno-lang.org/docs/benchmark/quality_criteria.html</loc></url>
   <url><loc>https://geno-lang.org/docs/benchmark/results.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/benchmark/seeded-mistakes.html</loc></url>
   <url><loc>https://geno-lang.org/docs/benchmark/validation-contract.html</loc></url>
   <url><loc>https://geno-lang.org/docs/deploy/browser.html</loc></url>
   <url><loc>https://geno-lang.org/docs/deploy/cli.html</loc></url>
@@ -43,6 +44,29 @@
   <url><loc>https://geno-lang.org/docs/proposals/0000-template.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/0001-executable-entrypoint-exit-semantics.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/0002-0.5-stable-promotion.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0003-geno-0.6-language-upgrade.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0004-generic-functions.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0005-type-parameter-bounds.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0006-method-call-syntax.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0007-contextual-type-inference.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0008-expression-ergonomics.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0009-result-only-errors.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0010-coherent-standard-library.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0011-host-names-and-runtime-limits.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0012-what-models-reach-for.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0013-isolated-run-capabilities.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0014-0.6-stable-promotion.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0015-0.6-rc4-promotion-baseline.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0016-0.6-rc5-promotion-baseline.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0017-panic-examples-and-property-checks.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0018-runtime-failure-diagnostics.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0019-local-mutation-is-not-an-effect.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0021-typed-json.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0022-self-tail-calls.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0023-format-specs-slices-named-patterns-if-let.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0024-test-backends.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0025-extern-functions.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0026-cold-write-forms.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/README.html</loc></url>
   <url><loc>https://geno-lang.org/docs/reference/capabilities.html</loc></url>
   <url><loc>https://geno-lang.org/docs/reference/common-pitfalls.html</loc></url>
@@ -55,5 +79,7 @@
   <url><loc>https://geno-lang.org/docs/spec/v0.2.html</loc></url>
   <url><loc>https://geno-lang.org/docs/spec/v0.4.html</loc></url>
   <url><loc>https://geno-lang.org/docs/spec/v0.5.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/spec/v0.6.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/spec/v0.7.html</loc></url>
   <url><loc>https://geno-lang.org/docs/changelog.html</loc></url>
 </urlset>

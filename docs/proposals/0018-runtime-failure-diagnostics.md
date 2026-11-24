@@ -727,7 +727,7 @@ the first lines of the generated body: the `body` section that
 capability-insertion layout test stays, and `test_trace_table` adds the
 anchor-offset check for both paths:
 
-```python
+```text
 def _geno_trace_anchor(): pass
 _GENO_TRACE = "G\t1\n..."
 ```
