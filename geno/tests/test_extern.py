@@ -240,14 +240,109 @@ def container_hooks_json():
     return DictHook({"xs": ListHook([TupleHook((1, StrLenHook("ok")))])})
 
 
+import asyncio as _asyncio
+
+_async_call_count = 0
+
+
+async def async_double(n):
+    await _asyncio.sleep(0)
+    return n * 2
+
+
+async def async_echo(value):
+    await _asyncio.sleep(0)
+    return value
+
+
+async def async_boom():
+    await _asyncio.sleep(0)
+    raise ValueError("async failure")
+
+
+async def async_count_calls():
+    global _async_call_count
+    await _asyncio.sleep(0)
+    _async_call_count += 1
+    return _async_call_count
+
+
+def boom_huge(n):
+    raise ValueError("x" * n)
+
+
+def user_missing_field():
+    return {"name": "Ada"}
+
+
+def user_optional_and_extra():
+    return {"name": "Ada", "extra": 999}
+
+
+def user_oversized_extra(n):
+    return {"name": "Ada", "x" * n: 1}
+
+
+def user_dict_hook():
+    return DictHook({StrLenHook("name"): StrLenHook("Ada"), StrLenHook("age"): 36})
+
+
+def enum_str_subclass():
+    return StrLenHook("Green")
+
+
+def bad_enum():
+    return "Purple"
+
+
+def union_missing_type():
+    return {"radius": 1.0}
+
+
+def union_non_str_type():
+    return {"type": 123}
+
+
+def union_bad_type():
+    return {"type": "Triangle"}
+
+
+def recursive_cycle():
+    node = {"type": "Node"}
+    node["left"] = node
+    node["right"] = {"type": "Leaf", "value": 1}
+    return node
+
+
 not_callable = 42
 """
 
 JS_HOST = """
 "use strict";
+let _asyncCallCount = 0;
 module.exports = {
     echo: value => value,
     boom: () => { throw new Error("bad input"); },
+    boomHuge: n => { throw new Error("x".repeat(n)); },
+    asyncDouble: async n => { await Promise.resolve(); return n * 2; },
+    asyncEcho: async value => { await Promise.resolve(); return value; },
+    asyncBoom: async () => { await Promise.resolve(); throw new Error("async failure"); },
+    asyncRejectString: () => Promise.reject("plain rejection"),
+    asyncCountCalls: async () => { await Promise.resolve(); _asyncCallCount += 1; return _asyncCallCount; },
+    userMissingField: () => ({ name: "Ada" }),
+    userOptionalAndExtra: () => ({ name: "Ada", extra: 999 }),
+    userOversizedExtra: n => ({ name: "Ada", ["x".repeat(n)]: 1 }),
+    userAsMap: () => new Map([["name", "Ada"], ["age", 36]]),
+    badEnum: () => "Purple",
+    unionMissingType: () => ({ radius: 1.0 }),
+    unionNonStrType: () => ({ type: 123 }),
+    unionBadType: () => ({ type: "Triangle" }),
+    recursiveCycle: () => {
+        const node = { type: "Node" };
+        node.left = node;
+        node.right = { type: "Leaf", value: 1 };
+        return node;
+    },
     stringForInt: () => "x",
     boolForInt: () => true,
     intForFloat: () => 3,
@@ -298,8 +393,16 @@ def run():
 """
 
 
-def _extern(name: str, signature: str, python: str | None, js: str | None) -> str:
-    lines = [f"extern func {name}{signature} with ffi"]
+def _extern(
+    name: str,
+    signature: str,
+    python: str | None,
+    js: str | None,
+    *,
+    is_async: bool = False,
+) -> str:
+    prefix = "async extern func" if is_async else "extern func"
+    lines = [f"{prefix} {name}{signature} with ffi"]
     if python is not None:
         lines.append(f'    python "{python}"')
     if js is not None:
@@ -534,23 +637,46 @@ def test_the_formatter_keeps_an_extern_and_indents_its_bindings() -> None:
 @pytest.mark.parametrize(
     ("signature", "message"),
     [
-        (
-            "(u: User) -> Int",
-            "Extern function 'f' cannot take parameter 'u': User cannot cross",
-        ),
         ("(xs: Array[Int]) -> Int", "Array[Int] cannot cross"),
         ("(m: Map[Int, String]) -> Int", "a Map's keys must be String"),
         ("(f: (Int) -> Int) -> Int", "cannot take parameter 'f'"),
-        ("(x: Int) -> Result[Int, String]", "Extern function 'f' cannot return"),
+        (
+            "(r: Result[Int, String]) -> Int",
+            "only allowed as the top-level return type",
+        ),
+        (
+            "(x: Int) -> Result[Int, Int]",
+            "an extern returning Result must use String as its error type",
+        ),
+        (
+            "(x: Int) -> List[Result[Int, String]]",
+            "only allowed as the top-level return type",
+        ),
+        (
+            "(x: Int) -> Result[Result[Int, String], String]",
+            "only allowed as the top-level return type",
+        ),
         ("(x: Int) -> Set[Int]", "Set[Int] cannot cross"),
-        ("(xs: List[User]) -> Int", "User cannot cross"),
         ("(x: Int) -> MutableMap[String, Int]", "cannot return"),
+        ("(x: Async[Int]) -> Int", "cannot take parameter 'x'"),
+        (
+            "(b: BadRecord) -> Int",
+            "in field 'cb' of BadRecord",
+        ),
+        (
+            "(x: Int) -> BadResultRecord",
+            "in field 'res' of BadResultRecord",
+        ),
     ],
 )
 def test_a_type_that_cannot_cross_the_boundary_is_e333(
     signature: str, message: str
 ) -> None:
-    source = "type User = User(name: String)\n" + _extern("f", signature, "m:f", None)
+    source = (
+        "type BadRecord = BadRecord(cb: (Int) -> Int)\n"
+        "type BadResultRecord = BadResultRecord(res: Result[Int, String])\n"
+        + _extern("f", signature, "m:f", None)
+    )
     result = _check(source)
     assert not result.ok
     (diagnostic,) = result.diagnostics
@@ -1657,3 +1783,804 @@ def test_js_host_getter_and_proxy_errors_stay_inside_extern_boundary(
     ok, failure = _run("js", source, host_dir)
     assert not ok
     assert failure == f"Extern function 'f' failed: {detail}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 / FFI v2: Fallible externs (Result[T, String]), async extern func,
+# and records / enums / tagged unions across the host boundary
+# ---------------------------------------------------------------------------
+
+
+def test_async_extern_parses_and_formats() -> None:
+    source = textwrap.dedent(
+        """\
+        export async extern func fetch_row(id: Int) -> Result[Int, String] with ffi
+            python "ffi_host:async_double"
+            js "./ffi_host.js#asyncDouble"
+        end func fetch_row
+        """
+    )
+    program = parse(source)
+    (defn,) = program.definitions
+    assert defn.is_extern
+    assert defn.is_async
+    assert defn.exported
+    assert defn.extern_bindings == {
+        "python": "ffi_host:async_double",
+        "js": "./ffi_host.js#asyncDouble",
+    }
+
+    messy = (
+        "export async extern func fetch_row(id: Int) -> Result[Int, String] with ffi\n"
+        'python "ffi_host:async_double"\n'
+        '        js   "./ffi_host.js#asyncDouble"\n'
+        "end func\n"
+    )
+    formatted = format_source(messy)
+    assert formatted == (
+        "export async extern func fetch_row(id: Int) -> Result[Int, String] with ffi\n"
+        '    python "ffi_host:async_double"\n'
+        '    js "./ffi_host.js#asyncDouble"\n'
+        "end func\n"
+    )
+    assert format_source(formatted) == formatted
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            'extern async func f(x: Int) -> Int with ffi\n    python "m:f"\nend func',
+            "Write 'async extern func', not 'extern async func'",
+        ),
+        (
+            '@untested("host")\nasync extern func f(x: Int) -> Int with ffi\n'
+            '    python "m:f"\nend func',
+            "@untested is not needed on an extern function",
+        ),
+    ],
+)
+def test_malformed_async_externs_are_parse_errors(body: str, message: str) -> None:
+    with pytest.raises(ParseError) as raised:
+        parse(body + "\n")
+    assert message in str(raised.value)
+
+
+def test_geno_doc_marks_an_async_extern(tmp_path: Path) -> None:
+    source = (
+        _extern(
+            "fetch_val",
+            "(x: Int) -> Result[Int, String]",
+            "ffi_host:async_double",
+            "./ffi_host.js#asyncDouble",
+            is_async=True,
+        )
+        + "func main() -> Unit\n    return ()\nend func\n"
+    )
+    (tmp_path / "main.geno").write_text(source, encoding="utf-8")
+    proc = _geno_cli("doc", "main.geno", "-o", "doc.html", cwd=tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    html = (tmp_path / "doc.html").read_text(encoding="utf-8")
+    assert '<span class="keyword">async extern func</span> fetch_val' in html
+
+
+def test_async_extern_respects_target_checks() -> None:
+    source = _extern(
+        "only_js_async", "(x: Int) -> Int", None, "m#f", is_async=True
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(await only_js_async(2))
+        end func
+        """
+    )
+    assert not _check(source, target="python-cli").ok
+    assert not _check(source, target="browser").ok
+    assert not _check(source, target="python-hosted").ok
+    assert _check(source, target="node-cli").ok
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_fallible_extern_returns_ok_and_err(backend: str, host_dir: Path) -> None:
+    source = (
+        _extern(
+            "safe_sqrt", "(x: Float) -> Result[Float, String]", "math:sqrt", "Math.sqrt"
+        )
+        + _extern(
+            "safe_boom",
+            "() -> Result[Int, String]",
+            "ffi_host:boom",
+            "./ffi_host.js#boom",
+        )
+        + _extern(
+            "safe_unit",
+            "() -> Result[Unit, String]",
+            "ffi_host:nothing",
+            "./ffi_host.js#nothing",
+        )
+        + _extern(
+            "safe_opt",
+            "() -> Result[Option[Int], String]",
+            "ffi_host:nothing",
+            "./ffi_host.js#nothing",
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(safe_sqrt(9.0))
+                match safe_boom() with
+                    | Ok(v) -> print(f"unexpected {v}")
+                    | Err(msg) -> print(contains(msg, "bad input"))
+                end match
+                print(safe_unit())
+                print(safe_opt())
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        True,
+        "Ok(value: 3.0)\ntrue\nOk(value: ())\nOk(value: None)\n",
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_fallible_extern_still_panics_on_load_failure_and_mismatch(
+    backend: str, host_dir: Path
+) -> None:
+    bad_load = _extern(
+        "missing",
+        "() -> Result[Int, String]",
+        "no_such_module_for_geno:f",
+        "./no_such_module.js#f",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(missing())
+        end func
+        """
+    )
+    ok, msg = _run(backend, bad_load, host_dir)
+    assert not ok
+    assert "could not load" in msg, msg
+
+    mismatch = _extern(
+        "bad_type",
+        "() -> Result[Int, String]",
+        "ffi_host:string_for_int",
+        "./ffi_host.js#stringForInt",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(bad_type())
+        end func
+        """
+    )
+    ok, msg = _run(backend, mismatch, host_dir)
+    assert not ok
+    assert "returned a value that is not Int:" in msg, msg
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_fallible_extern_enforces_string_limit_on_error_message(
+    backend: str, host_dir: Path
+) -> None:
+    source = _extern(
+        "boom_huge",
+        "(n: Int) -> Result[Int, String]",
+        "ffi_host:boom_huge",
+        "./ffi_host.js#boomHuge",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            let r = boom_huge(30)
+            print("returned")
+        end func
+        """
+    )
+    if backend == "interpreter":
+        result = api.run(
+            source,
+            config=api.RunConfig(
+                capabilities={"ffi", "print"}, allow_ffi=True, max_collection_size=10
+            ),
+        )
+        assert not result.ok
+        message = result.diagnostics[0].message
+    else:
+        if backend == "python":
+            path = host_dir / "program.py"
+            code = "_GENO_MAX_COLLECTION_SIZE = 10\n" + compile_to_python(source)
+            command = [sys.executable, str(path)]
+        else:
+            path = host_dir / "program.js"
+            js = compile_to_js(source)
+            assert isinstance(js, str)
+            code = "globalThis.__GENO_MAX_COLLECTION_SIZE = 10;\n" + js
+            command = ["node", str(path)]
+        path.write_text(code, encoding="utf-8")
+        proc = subprocess.run(
+            [*command, "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode != 0, proc.stdout
+        message = _failure_line(proc.stderr)
+    assert "String size exceeds limit" in message, message
+
+
+@needs_node
+def test_fallible_js_extern_panics_on_throwing_getter_not_err(host_dir: Path) -> None:
+    source = _extern(
+        "bad_getter",
+        "() -> Result[Map[String, Int], String]",
+        None,
+        "./ffi_host.js#throwingGetter",
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(bad_getter())
+        end func
+        """
+    )
+    ok, msg = _run("js", source, host_dir)
+    assert not ok
+    assert msg == "Extern function 'bad_getter' failed: Error: getter_boom"
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+def test_fallible_python_extern_enforces_int_bit_limit(
+    backend: str, host_dir: Path
+) -> None:
+    source = _extern(
+        "huge", "() -> Result[Int, String]", "ffi_host:huge", None
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            let r = huge()
+            print("returned")
+        end func
+        """
+    )
+    ok, msg = _run(backend, source, host_dir)
+    assert not ok
+    assert msg == "Integer exceeds maximum size (100001 bits)"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_async_extern_resolves_rejects_and_runs_once(
+    backend: str, host_dir: Path
+) -> None:
+    source = (
+        _extern(
+            "async_double",
+            "(n: Int) -> Int",
+            "ffi_host:async_double",
+            "./ffi_host.js#asyncDouble",
+            is_async=True,
+        )
+        + _extern(
+            "async_boom_fallible",
+            "() -> Result[Int, String]",
+            "ffi_host:async_boom",
+            "./ffi_host.js#asyncBoom",
+            is_async=True,
+        )
+        + _extern(
+            "sync_as_async",
+            "(n: Int) -> Int",
+            "ffi_host:echo",
+            "./ffi_host.js#echo",
+            is_async=True,
+        )
+        + _extern(
+            "sync_boom_as_async",
+            "() -> Result[Int, String]",
+            "ffi_host:boom",
+            "./ffi_host.js#boom",
+            is_async=True,
+        )
+        + _extern(
+            "count_once",
+            "() -> Int",
+            "ffi_host:async_count_calls",
+            "./ffi_host.js#asyncCountCalls",
+            is_async=True,
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(await async_double(21))
+                match await async_boom_fallible() with
+                    | Ok(v) -> print(f"unexpected {v}")
+                    | Err(msg) -> print(contains(msg, "async failure"))
+                end match
+                print(await sync_as_async(9))
+                match await sync_boom_as_async() with
+                    | Ok(v) -> print(f"unexpected {v}")
+                    | Err(msg) -> print(contains(msg, "bad input"))
+                end match
+                let pending = count_once()
+                let first = await pending
+                let second = await pending
+                print(first)
+                print(second)
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (True, "42\ntrue\n9\ntrue\n1\n1\n")
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_async_extern_infallible_rejection_panics(backend: str, host_dir: Path) -> None:
+    source = _extern(
+        "async_boom",
+        "() -> Int",
+        "ffi_host:async_boom",
+        "./ffi_host.js#asyncBoom",
+        is_async=True,
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(await async_boom())
+        end func
+        """
+    )
+    ok, msg = _run(backend, source, host_dir)
+    assert not ok
+    expected = (
+        "Extern function 'async_boom' failed: Error: async failure"
+        if backend == "js"
+        else "Extern function 'async_boom' failed: ValueError: async failure"
+    )
+    assert msg == expected
+
+
+@needs_node
+def test_async_js_extern_handles_non_error_rejection(host_dir: Path) -> None:
+    source = _extern(
+        "reject_str",
+        "() -> Result[Int, String]",
+        None,
+        "./ffi_host.js#asyncRejectString",
+        is_async=True,
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(await reject_str())
+        end func
+        """
+    )
+    assert _run("js", source, host_dir) == (True, 'Err(error: "plain rejection")\n')
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_async_extern_without_ffi_is_denied_without_loading(
+    backend: str, host_dir: Path
+) -> None:
+    source = _extern(
+        "marked_async",
+        "() -> Int",
+        "ffi_marker:run",
+        "./ffi_marker.js#run",
+        is_async=True,
+    ) + textwrap.dedent(
+        """\
+        func main() -> Unit with ffi, io
+            print(await marked_async())
+        end func
+        """
+    )
+    ok, msg = _run(backend, source, host_dir, capabilities=frozenset({"print"}))
+    assert not ok
+    assert msg.startswith(
+        "Capability denied: 'marked_async' requires the 'ffi' capability"
+    ), msg
+    assert not (host_dir / "imported.txt").exists()
+
+
+def test_async_extern_in_interpreter_works_inside_running_event_loop(
+    host_dir: Path,
+) -> None:
+    import asyncio
+
+    source = _extern(
+        "async_double",
+        "(n: Int) -> Int",
+        "ffi_host:async_double",
+        None,
+        is_async=True,
+    ) + textwrap.dedent(
+        """\
+        func main() -> Int with ffi
+            return await async_double(15)
+        end func
+        """
+    )
+
+    async def inside_loop() -> int:
+        res = api.run(
+            source, config=api.RunConfig(capabilities={"ffi"}, allow_ffi=True)
+        )
+        assert res.ok, _messages(res)
+        return res.value
+
+    assert asyncio.run(inside_loop()) == 30
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_records_enums_unions_generics_and_recursive_types_cross_ffi(
+    backend: str, host_dir: Path
+) -> None:
+    types_src = textwrap.dedent(
+        """\
+        type Color = Red | Green | Blue
+        type Address = Address(city: String, zip: Option[String])
+        type User = User(name: String, age: Int, color: Color, address: Address)
+        type Shape = Circle(radius: Float) | Rect(w: Float, h: Float) | Point
+        type Box[T] = Box(value: T)
+        type Tree = Leaf(value: Int) | Node(left: Tree, right: Tree)
+        """
+    )
+    source = (
+        types_src
+        + _echo("echo_user", "User")
+        + _echo("echo_color", "Color")
+        + _echo("echo_shape", "Shape")
+        + _echo("echo_box", "Box[User]")
+        + _echo("echo_tree", "Tree")
+        + _extern(
+            "async_echo_user",
+            "(u: User) -> Result[User, String]",
+            "ffi_host:async_echo",
+            "./ffi_host.js#asyncEcho",
+            is_async=True,
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                let u = User(name: "Ada", age: 36, color: Green, address: Address(city: "London", zip: Some("SW1")))
+                print(echo_user(u) == u)
+                print(echo_color(Blue) == Blue)
+                let s1: Shape = Circle(radius: 2.5)
+                let s2: Shape = Point
+                print(echo_shape(s1) == s1)
+                print(echo_shape(s2) == s2)
+                let b = Box(value: u)
+                print(echo_box(b) == b)
+                let t = Node(left: Leaf(value: 1), right: Node(left: Leaf(value: 2), right: Leaf(value: 3)))
+                print(echo_tree(t) == t)
+                match await async_echo_user(u) with
+                    | Ok(got) -> print(got == u)
+                    | Err(e) -> print(e)
+                end match
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        True,
+        "true\ntrue\ntrue\ntrue\ntrue\ntrue\ntrue\n",
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_record_wire_format_optional_omission_and_extra_keys(
+    backend: str, host_dir: Path
+) -> None:
+    source = (
+        textwrap.dedent(
+            """\
+            type Color = Red | Green
+            type Profile = Profile(name: String, nick: Option[String])
+            type Shape = Circle(radius: Float) | Point
+            """
+        )
+        + _extern(
+            "inspect_args",
+            "(p: Profile, c: Color, s: Shape) -> String",
+            "ffi_host:args_seen",
+            "./ffi_host.js#argsSeen",
+        )
+        + _extern(
+            "from_partial",
+            "() -> Profile",
+            "ffi_host:user_optional_and_extra",
+            "./ffi_host.js#userOptionalAndExtra",
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(inspect_args(p: Profile(name: "Ada", nick: None), c: Red, s: Circle(radius: 1.5)))
+                print(from_partial() == Profile(name: "Ada", nick: None))
+            end func
+            """
+        )
+    )
+    ok, output = _run(backend, source, host_dir)
+    assert ok, output
+    lines = output.splitlines()
+    assert lines[1] == "true"
+    if backend == "js":
+        assert (
+            lines[0]
+            == '[{"name":"Ada","nick":null},"Red",{"type":"Circle","radius":1.5}]'
+        )
+    else:
+        assert (
+            lines[0]
+            == "({'name': 'Ada', 'nick': None}, 'Red', {'type': 'Circle', 'radius': 1.5})"
+        )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize(
+    ("types_src", "ret_type", "py_fn", "js_fn", "expected"),
+    [
+        (
+            "type User = User(name: String, age: Int)\n",
+            "User",
+            "ffi_host:user_missing_field",
+            "./ffi_host.js#userMissingField",
+            "Extern function 'f' returned a value that is not User: missing field \"age\"",
+        ),
+        (
+            "type Color = Red | Green | Blue\n",
+            "Color",
+            "ffi_host:bad_enum",
+            "./ffi_host.js#badEnum",
+            'Extern function \'f\' returned a value that is not Color: expected one of "Red", "Green", "Blue", got "Purple"',
+        ),
+        (
+            "type Shape = Circle(radius: Float) | Point\n",
+            "Shape",
+            "ffi_host:union_missing_type",
+            "./ffi_host.js#unionMissingType",
+            "Extern function 'f' returned a value that is not Shape: missing field \"type\"",
+        ),
+        (
+            "type Shape = Circle(radius: Float) | Point\n",
+            "Shape",
+            "ffi_host:union_non_str_type",
+            "./ffi_host.js#unionNonStrType",
+            "Extern function 'f' returned a value that is not Shape: $.type: expected String, got ",
+        ),
+        (
+            "type Shape = Circle(radius: Float) | Point\n",
+            "Shape",
+            "ffi_host:union_bad_type",
+            "./ffi_host.js#unionBadType",
+            'Extern function \'f\' returned a value that is not Shape: $.type: expected one of "Circle", "Point", got "Triangle"',
+        ),
+        (
+            "type Tree = Leaf(value: Int) | Node(left: Tree, right: Tree)\n",
+            "Tree",
+            "ffi_host:recursive_cycle",
+            "./ffi_host.js#recursiveCycle",
+            "Extern function 'f' returned a value that is not Tree: the result is nested too deeply",
+        ),
+    ],
+)
+def test_adt_host_mismatch_messages_match_across_backends(
+    backend: str,
+    host_dir: Path,
+    types_src: str,
+    ret_type: str,
+    py_fn: str,
+    js_fn: str,
+    expected: str,
+) -> None:
+    source = (
+        types_src
+        + _extern("f", f"() -> {ret_type}", py_fn, js_fn)
+        + "func main() -> Unit with ffi, io\n    print(f())\nend func\n"
+    )
+    ok, msg = _run(backend, source, host_dir)
+    assert not ok
+    assert msg.startswith(expected), msg
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_recursive_adt_argument_depth_limit(backend: str, host_dir: Path) -> None:
+    source = (
+        "type Chain = End | Link(next: Chain)\n"
+        + _echo("echo_chain", "Chain")
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                var c: Chain = End
+                var i = 0
+                while i < 400 do
+                    c = Link(next: c)
+                    i = i + 1
+                end while
+                let r = echo_chain(c)
+                print("done")
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (
+        False,
+        "Extern function 'echo_chain' got an argument nested more than 320 levels deep",
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_record_oversized_extra_key_hits_string_limit(
+    backend: str, host_dir: Path
+) -> None:
+    source = (
+        "type Profile = Profile(name: String)\n"
+        + _extern(
+            "extra_key",
+            "(n: Int) -> Profile",
+            "ffi_host:user_oversized_extra",
+            "./ffi_host.js#userOversizedExtra",
+        )
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                let p = extra_key(25)
+                print("returned")
+            end func
+            """
+        )
+    )
+    if backend == "interpreter":
+        result = api.run(
+            source,
+            config=api.RunConfig(
+                capabilities={"ffi", "print"}, allow_ffi=True, max_collection_size=10
+            ),
+        )
+        assert not result.ok
+        message = result.diagnostics[0].message
+    else:
+        if backend == "python":
+            path = host_dir / "program.py"
+            code = "_GENO_MAX_COLLECTION_SIZE = 10\n" + compile_to_python(source)
+            command = [sys.executable, str(path)]
+        else:
+            path = host_dir / "program.js"
+            js = compile_to_js(source)
+            assert isinstance(js, str)
+            code = "globalThis.__GENO_MAX_COLLECTION_SIZE = 10;\n" + js
+            command = ["node", str(path)]
+        path.write_text(code, encoding="utf-8")
+        proc = subprocess.run(
+            [*command, "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode != 0, proc.stdout
+        message = _failure_line(proc.stderr)
+    assert "String size exceeds limit" in message, message
+
+
+@pytest.mark.parametrize("backend", PYTHON_BACKENDS)
+def test_record_and_enum_ignore_python_subclass_hooks(
+    backend: str, host_dir: Path
+) -> None:
+    source = (
+        "type User = User(name: String, age: Int)\n"
+        "type Color = Red | Green\n"
+        + _extern("user_hook", "() -> User", "ffi_host:user_dict_hook", None)
+        + _extern("color_hook", "() -> Color", "ffi_host:enum_str_subclass", None)
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(user_hook() == User(name: "Ada", age: 36))
+                print(color_hook() == Green)
+            end func
+            """
+        )
+    )
+    assert _run(backend, source, host_dir) == (True, "true\ntrue\n")
+
+
+@needs_node
+def test_js_record_accepts_map_and_rejects_date(host_dir: Path) -> None:
+    ok_src = (
+        "type User = User(name: String, age: Int)\n"
+        + _extern("from_map", "() -> User", None, "./ffi_host.js#userAsMap")
+        + textwrap.dedent(
+            """\
+            func main() -> Unit with ffi, io
+                print(from_map() == User(name: "Ada", age: 36))
+            end func
+            """
+        )
+    )
+    assert _run("js", ok_src, host_dir) == (True, "true\n")
+
+    bad_src = (
+        "type User = User(name: String, age: Int)\n"
+        + _extern("bad_date", "() -> User", None, "./ffi_host.js#when")
+        + "func main() -> Unit with ffi, io\n    print(bad_date())\nend func\n"
+    )
+    ok, msg = _run("js", bad_src, host_dir)
+    assert not ok
+    assert (
+        msg
+        == "Extern function 'bad_date' returned a value that is not User: expected a plain object, got Date"
+    )
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_imported_module_record_crosses_ffi(backend: str, host_dir: Path) -> None:
+    (host_dir / "Models.geno").write_text(
+        "export type Item = Item(id: Int, label: String)\n", encoding="utf-8"
+    )
+    (host_dir / "main.geno").write_text(
+        textwrap.dedent(
+            """\
+            import Models
+
+            extern func echo_item(item: Item) -> Item with ffi
+                python "ffi_host:echo"
+                js "./ffi_host.js#echo"
+            end func
+
+            func main() -> Unit with ffi, io
+                let it = Item(id: 7, label: "widget")
+                print(echo_item(it) == it)
+            end func
+            """
+        ),
+        encoding="utf-8",
+    )
+    if backend == "interpreter":
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "geno",
+                "run",
+                "--unsafe",
+                "--cap",
+                "ffi,print",
+                "main.geno",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "true\n"
+    elif backend == "python":
+        c = _geno_cli("compile", "main.geno", "-o", "out.py", cwd=host_dir)
+        assert c.returncode == 0, c.stderr
+        proc = subprocess.run(
+            [sys.executable, "out.py", "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
+            cwd=host_dir,
+            env={**os.environ, "PYTHONPATH": str(host_dir)},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "true\n"
+    else:
+        c = _geno_cli(
+            "compile", "--target", "js", "main.geno", "-o", "out.js", cwd=host_dir
+        )
+        assert c.returncode == 0, c.stderr
+        proc = subprocess.run(
+            ["node", "out.js", "--cap", "ffi,print"],
+            capture_output=True,
+            text=True,
+            timeout=GENERATED_PROGRAM_TIMEOUT,
+            cwd=host_dir,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout == "true\n"

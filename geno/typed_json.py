@@ -32,8 +32,16 @@ class InterpreterJsonOps:
     collection limit.
     """
 
-    def __init__(self, builtins: Mapping[str, Callable[..., Any]]) -> None:
+    def __init__(
+        self,
+        builtins: Mapping[str, Callable[..., Any]],
+        *,
+        extern_size: Callable[[str, int], None] | None = None,
+        extern_int: Callable[[int], None] | None = None,
+    ) -> None:
         self._builtins = builtins
+        self.extern_size = extern_size
+        self.extern_int = extern_int
 
     def tag(self, node: ConstructorValue) -> str:
         return node.constructor

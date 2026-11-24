@@ -1,10 +1,8 @@
 // Proposal 0025: an extern's parameters and result must cross the host
-// boundary. A record does not: it is the new diagnostic E333.
+// boundary. A function type does not: it is the new diagnostic E333.
 
-type User = User(name: String)
-
-extern func save(user: User) -> Unit with ffi
-    python "storage:save"
+extern func apply_host(f: (Int) -> Int) -> Unit with ffi
+    python "storage:apply"
 end func
 
 func main() -> Unit with io

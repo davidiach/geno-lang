@@ -3943,28 +3943,51 @@ class Interpreter:
                 f"Extern function '{defn.name}' was not type-checked",
                 stmt.location,
             )
-        params, result_shape = shapes
         bindings = defn.extern_bindings or {}
         spec = bindings.get("python")
         binding = None if spec is None else python_binding(spec)
         arguments = [env.lookup(param.name) for param in defn.params]
-        ops = self.__dict__.get("_extern_ops")
-        if ops is None:
-            # Only the ungated collection builtins are read, so the adapter
-            # stays valid when capabilities are applied again.
-            ops = InterpreterJsonOps(
-                {key: value.func for key, value in self._builtin_functions.items()}
-            )
-            self._extern_ops = ops
+
+        def _extern_size(kind: str, size: int) -> None:
+            try:
+                self._check_collection_size(kind, size, stmt.location)
+            except RuntimeLimitError as exc:
+                raise _runtime._GenoExternLimit(exc) from None
+
+        def _extern_int(value: int) -> None:
+            try:
+                self._check_integer_bits(value, stmt.location)
+            except RuntimeLimitError as exc:
+                raise _runtime._GenoExternLimit(exc) from None
+
+        ops = InterpreterJsonOps(
+            {key: value.func for key, value in self._builtin_functions.items()},
+            extern_size=_extern_size,
+            extern_int=_extern_int,
+        )
         try:
-            value = _runtime._geno_extern_invoke(
-                defn.name,
-                binding,
-                arguments,
-                params,
-                result_shape,
-                ops,
-            )
+            if defn.is_async:
+                value = _run_coro_sync(
+                    _runtime._geno_extern_invoke_async(
+                        defn.name,
+                        binding,
+                        arguments,
+                        shapes.params,
+                        shapes.result,
+                        ops,
+                        shapes.types,
+                    )
+                )
+            else:
+                value = _runtime._geno_extern_invoke(
+                    defn.name,
+                    binding,
+                    arguments,
+                    shapes.params,
+                    shapes.result,
+                    ops,
+                    shapes.types,
+                )
         except _runtime._GenoExternFailure as failure:
             raise RuntimeError(
                 str(failure), stmt.location, error_code=ErrorCode.RUNTIME_PANIC
@@ -4497,6 +4520,21 @@ class _ExternCall(Statement):
 
     def accept(self, visitor: Any) -> Any:  # pragma: no cover - never visited
         raise NotImplementedError
+
+
+def _run_coro_sync(coro: Any) -> Any:
+    """Drive an async extern coroutine to completion from the interpreter."""
+    import asyncio
+    import builtins
+
+    try:
+        asyncio.get_running_loop()
+    except builtins.RuntimeError:
+        return asyncio.run(coro)
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 def _function_body(defn: FunctionDef) -> list[Statement]:

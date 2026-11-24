@@ -1116,7 +1116,7 @@ class BaseCompiler(ABC):
 
     @staticmethod
     def _uses_typed_json(programs: Iterable[Program]) -> bool:
-        """Whether any call in *programs* carries a typed-JSON codec."""
+        """Whether any call or extern in *programs* needs constructor registration."""
         stack: list[object] = [program.definitions for program in programs]
         while stack:
             node = stack.pop()
@@ -1127,6 +1127,12 @@ class BaseCompiler(ABC):
                     return True
                 stack.append(node.function)
                 stack.extend(argument.value for argument in node.arguments)
+            elif (
+                isinstance(node, FunctionDef)
+                and node._extern_shapes is not None
+                and bool(node._extern_shapes.types)
+            ):
+                return True
             elif is_dataclass(node) and not isinstance(node, type):
                 stack.extend(
                     getattr(node, item.name)

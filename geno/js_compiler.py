@@ -179,7 +179,7 @@ _PRELUDE_NAME_TO_SECTIONS: dict[str, tuple[int, ...]] | None = None
 _PRELUDE_SECTION_CLOSURES: list[frozenset[int]] | None = None
 _PRELUDE_IDENTIFIER_RE = _re.compile(r"\b[A-Za-z_]\w*\b")
 _PRELUDE_NAME_DEF_RE = _re.compile(
-    r"^(?:function\s+(\w+)|class\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=)"
+    r"^(?:(?:async\s+)?function\s+(\w+)|class\s+(\w+)|(?:const|let|var)\s+(\w+)\s*=)"
 )
 _MAX_SAFE_JS_INT = 9_007_199_254_740_991
 
@@ -2100,17 +2100,25 @@ class JSCompiler(BaseCompiler):
         """
         if defn._extern_shapes is None:
             raise JSCompileError(f"Extern function '{defn.name}' was not type-checked")
-        params, result = defn._extern_shapes
+        codec = defn._extern_shapes
         spec = (defn.extern_bindings or {}).get("js")
         binding = None if spec is None else list(js_binding(spec))
         arguments = ", ".join(self._mangle_name(p.name) for p in defn.params)
+        types_json = _json.dumps(list(codec.types.items()), ensure_ascii=False)
         # Located at the declaration, as the interpreter locates the call.
         with self._traced_statement(defn.location):
-            self._writeln(
-                f"return _genoExternCall({_json.dumps(defn.name)}, "
-                f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(params)}, "
-                f"{_json.dumps(result)});"
-            )
+            if defn.is_async:
+                self._writeln(
+                    f"return await _genoExternCallAsync({_json.dumps(defn.name)}, "
+                    f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(codec.params)}, "
+                    f"{_json.dumps(codec.result)}, {types_json});"
+                )
+            else:
+                self._writeln(
+                    f"return _genoExternCall({_json.dumps(defn.name)}, "
+                    f"{_json.dumps(binding)}, [{arguments}], {_json.dumps(codec.params)}, "
+                    f"{_json.dumps(codec.result)}, {types_json});"
+                )
 
     # -- Test-harness builds (proposal 0024) ---------------------------------
 

@@ -143,8 +143,25 @@ class Parser(
             defn = self._parse_extern_def()
             defn.exported = is_exported
             return defn
+        if (
+            self._check(TokenType.IDENTIFIER)
+            and self._current().value == "extern"
+            and self._peek(1).type is TokenType.ASYNC
+            and self._peek(2).type is TokenType.FUNC
+        ):
+            raise self._error("Write 'async extern func', not 'extern async func'")
         if self._check(TokenType.ASYNC):
+            async_location = self._current().location
             self._advance()  # consume 'async'
+            if self._at_extern_def():
+                if untested_reason is not None:
+                    raise self._error(
+                        "@untested is not needed on an extern function: it has no "
+                        "body, so it needs no examples"
+                    )
+                defn = self._parse_extern_def(is_async=True, location=async_location)
+                defn.exported = is_exported
+                return defn
             defn = self._parse_function_def(is_async=True)
             defn.untested_reason = untested_reason
             defn.exported = is_exported
@@ -523,21 +540,27 @@ class Parser(
             and self._peek(1).type is TokenType.FUNC
             and (
                 self.pos == 0
-                or self.tokens[self.pos - 1].type is TokenType.EXPORT
+                or self.tokens[self.pos - 1].type in (TokenType.EXPORT, TokenType.ASYNC)
                 or self._current().location.line
                 > self.tokens[self.pos - 1].location.line
             )
         )
 
-    def _parse_extern_def(self) -> FunctionDef:
+    def _parse_extern_def(
+        self,
+        *,
+        is_async: bool = False,
+        location: SourceLocation | None = None,
+    ) -> FunctionDef:
         """Parse an extern function (proposal 0025)::
 
-        extern func name(params) -> Type with ffi
+        [async] extern func name(params) -> Type with ffi
             python "module:function"
             js "module#export"
         end func
         """
-        location = self._current().location
+        if location is None:
+            location = self._current().location
         self._advance()  # consume 'extern'
         self._expect(TokenType.FUNC)
         name = self._expect(TokenType.IDENTIFIER, "Expected function name").value
@@ -626,6 +649,7 @@ class Parser(
             specs=SpecBlock(),
             body=[],
             closing_name=closing_name,
+            is_async=is_async,
             effects=effects,
             extern_bindings=bindings,
         )
