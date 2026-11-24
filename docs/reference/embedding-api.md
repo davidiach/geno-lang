@@ -310,7 +310,9 @@ A runtime failure's Geno stack is on the same diagnostic (0.7 line):
 ```python
 for d in result.diagnostics:
     for frame in d.stack.frames if d.stack else ():
-        where = f"{frame.location.line}:{frame.location.column}" if frame.location else "?"
+        where = (
+            f"{frame.location.line}:{frame.location.column}" if frame.location else "?"
+        )
         print(f"  {where} in {frame.function}")
 ```
 

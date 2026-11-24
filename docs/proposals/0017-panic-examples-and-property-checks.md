@@ -247,13 +247,19 @@ string on the next line (a body statement) from being taken as a message.
 @dataclass
 class ExampleClause(ASTNode):
     input_expr: Expression
-    output_expr: Expression | None          # None for a panics example
-    panic_message: str | None = None        # the text after `panics`, if any
+    output_expr: Expression | None  # None for a panics example
+    panic_message: str | None = None  # the text after `panics`, if any
     # Source positions for fixes; not part of the program's structure.
-    arrow_location: SourceLocation | None = field(default=None, repr=False, compare=False)
-    expectation_location: SourceLocation | None = field(default=None, repr=False, compare=False)
+    arrow_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
+    expectation_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
     end_location: SourceLocation | None = field(default=None, repr=False, compare=False)
-    inputs_end_location: SourceLocation | None = field(default=None, repr=False, compare=False)
+    inputs_end_location: SourceLocation | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def expects_panic(self) -> bool:
@@ -357,12 +363,17 @@ share:
 @dataclass(frozen=True)
 class CallFailure:
     kind: Literal["panic", "limit", "refused"]
-    message: str               # the Geno-facing message, without location or "Runtime Error:"
-    limit: str | None = None   # "step limit", "timeout", "recursion depth", ...
+    message: str  # the Geno-facing message, without location or "Runtime Error:"
+    limit: str | None = None  # "step limit", "timeout", "recursion depth", ...
+
 
 def classify_call_failure(exc: BaseException) -> CallFailure | None: ...
-def panic_message_matches(message: str, expected: str) -> bool: ...  # casefolded substring
-def check_panics_example(failure: CallFailure | None, returned: object, expected: str | None) -> str | None: ...
+def panic_message_matches(
+    message: str, expected: str
+) -> bool: ...  # casefolded substring
+def check_panics_example(
+    failure: CallFailure | None, returned: object, expected: str | None
+) -> str | None: ...
 ```
 
 `classify_call_failure` returns `None` for exceptions that are not Geno-facing
@@ -391,10 +402,15 @@ classifier would miss sites like these. So `geno/values.py` gains
 ```python
 class RuntimeLimitError(GenoRuntimeError):
     """A sandbox-configurable runtime limit was exceeded (not a panic)."""
-    def __init__(self, message: str, location: SourceLocation | None = None,
-                 error_code: Any | None = None, *,
-                 limit: Literal["collection size", "integer size",
-                                "numeric range", "output"]) -> None: ...
+
+    def __init__(
+        self,
+        message: str,
+        location: SourceLocation | None = None,
+        error_code: Any | None = None,
+        *,
+        limit: Literal["collection size", "integer size", "numeric range", "output"],
+    ) -> None: ...
 ```
 
 and every site guarded by `SandboxConfig.max_collection_size`,
@@ -678,10 +694,10 @@ path that calls them):
 
 ```python
 clause: Literal["requires", "ensures"] | None = None
-reason: Literal["false", "propagate"] | None = None   # evaluated to false / used `?`
-clause_index: int | None = None                        # index into specs.requires / specs.ensures
-call_depth: int | None = None                          # now set on every variant
-result_display: str | None = None                      # ensures only: the returned value, displayed
+reason: Literal["false", "propagate"] | None = None  # evaluated to false / used `?`
+clause_index: int | None = None  # index into specs.requires / specs.ensures
+call_depth: int | None = None  # now set on every variant
+result_display: str | None = None  # ensures only: the returned value, displayed
 ```
 
 `result_display` was added while implementing package 3: the report shows an
