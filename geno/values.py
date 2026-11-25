@@ -633,6 +633,8 @@ def _value_to_json(value: Any, seen: set[int]) -> Any:
         return value
     if isinstance(value, (int, str)):
         return value
+    if isinstance(value, bytes):
+        return {"_bytes": value.hex()}
 
     if isinstance(
         value,

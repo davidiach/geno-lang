@@ -26,6 +26,7 @@ _builtin_enumerate: Callable[..., Any] = enumerate
 _builtin_min = min
 _builtin_max = max
 _GENO_OBJECT = ().__class__.__mro__[-1]
+_GenoBytes: Any = b"".__class__
 _GENO_MISSING = _GENO_OBJECT()
 _DECIMAL_INT_RE = _re.compile(r"^-?[0-9]+$")
 _MAX_SAFE_JS_INT = 2**53 - 1
@@ -212,6 +213,8 @@ def _geno_sort_key(value: Any, _seen: tuple[Any, ...] | None = None) -> tuple[An
         return (2, value)
     if isinstance(value, str):
         return (4, value)
+    if isinstance(value, _GenoBytes):
+        return (13, tuple(value))
     if isinstance(value, tuple):
         return (5, tuple(_geno_sort_key(item, _seen) for item in value))
     if isinstance(value, Constructor):
@@ -390,6 +393,8 @@ def _geno_format(
         return "true" if value else "false"
     if isinstance(value, str):
         return value if _top_level else _geno_quote_string(value)
+    if isinstance(value, _GenoBytes):
+        return f"Bytes({value.hex()})"
     if isinstance(value, Constructor):
         fields = _dataclasses_fields(value)
         constructor_name = "None" if isinstance(value, _None) else type(value).__name__
@@ -850,14 +855,14 @@ def contains(lst: list[Any], item: Any) -> bool:
 
 
 def _geno_slice(target: Any, start: Any, stop: Any) -> Any:
-    """``target[start:stop]`` on a List or a String.
+    """``target[start:stop]`` on a List, a String, or Bytes.
 
     A bound is ``None`` when the slice left it out. A negative bound counts
     from the end and one past either end is clamped, so this never fails for
     Int bounds. Strings slice by code point.
     """
-    if not isinstance(target, (list, str)):
-        raise RuntimeError("A slice takes a List or a String")
+    if not isinstance(target, (list, str, _GenoBytes)):
+        raise RuntimeError("A slice takes a List, a String, or Bytes")
     for bound in (start, stop):
         if bound is not None and type(bound) is not int:
             raise RuntimeError("A slice bound must be an integer")
@@ -1719,6 +1724,9 @@ def _check_collection_size(result):
         if isinstance(value, str):
             _check_collection_kind("String", len(value))
             continue
+        if isinstance(value, _GenoBytes):
+            _check_collection_kind("Bytes", len(value))
+            continue
 
         if _identity_find(visited, value) is not None:
             continue
@@ -1871,6 +1879,19 @@ class _GenoFString:
                 self.append(value)
             else:
                 self._append_quoted_string(value)
+        elif isinstance(value, _GenoBytes):
+            self.append("Bytes(")
+            budget = (
+                self.limit
+                if isinstance(self, _GenoBoundedDisplay)
+                else _MAX_COLLECTION_SIZE
+            )
+            head = value[: (budget // 2) + 2]
+            self.append(head.hex())
+            if len(head) == len(value):
+                self.append(")")
+            else:
+                self.append("0")
         elif isinstance(value, Constructor):
             fields = _dataclasses_fields(value)
             self.append("None" if isinstance(value, _None) else type(value).__name__)
@@ -2102,12 +2123,16 @@ def _replace_result_size(text: str, old: str, new: str) -> int:
 
 
 def _safe_add(a, b):
-    """Addition that enforces collection size limits on str/list results."""
+    """Addition that enforces collection size limits on str/bytes/list results."""
     # Pre-check size before allocation to prevent OOM on huge operands
-    if isinstance(a, (str, list)) and isinstance(b, type(a)):
+    if isinstance(a, (str, _GenoBytes, list)) and isinstance(b, type(a)):
         expected = len(a) + len(b)
         if expected > _MAX_COLLECTION_SIZE:
-            kind = "String" if isinstance(a, str) else "List"
+            kind = (
+                "String"
+                if isinstance(a, str)
+                else ("Bytes" if isinstance(a, _GenoBytes) else "List")
+            )
             raise RuntimeError(
                 f"{kind} size exceeds limit ({expected} > {_MAX_COLLECTION_SIZE})"
             )
@@ -4779,7 +4804,7 @@ def _geno_extern_to_host(
             + str(_GENO_EXTERN_MAX_DEPTH)
             + " levels deep"
         )
-    if kind in ("int", "float", "string", "bool"):
+    if kind in ("int", "float", "string", "bytes", "bool"):
         return value
     if kind == "unit":
         return None
@@ -4932,6 +4957,15 @@ def _geno_extern_from_host(
             _geno_extern_mismatch(path, "String", value)
         _geno_extern_size(ops, "String", str.__len__(value))
         return _geno_extern_str(value)
+    if kind == "bytes":
+        value_type = type(value)
+        if value_type is _GenoBytes:
+            _geno_extern_size(ops, "Bytes", _GenoBytes.__len__(value))
+            return value
+        if value_type.__module__ == "builtins" and value_type.__name__ == "bytearray":
+            _geno_extern_size(ops, "Bytes", len(value))
+            return _GenoBytes(value)
+        _geno_extern_mismatch(path, "Bytes", value)
     if kind == "bool":
         if not isinstance(value, bool):
             _geno_extern_mismatch(path, "Bool", value)
@@ -5377,7 +5411,7 @@ def _geno_value_to_python(value):
             )
         return result
     # Runtime-only containers fall back to their Geno display representation.
-    if isinstance(value, (_GenoArray, _GenoMutableMap, _GenoVec, _GenoSet)):
+    if isinstance(value, (_GenoArray, _GenoMutableMap, _GenoVec, _GenoSet, _GenoBytes)):
         return _geno_format(value)
     # Generic ADT with _tag
     if hasattr(value, "_tag"):
@@ -6712,6 +6746,83 @@ def _read_limited_text_stream(
     return "".join(parts)
 
 
+def _check_limited_bytes_size(fn_name: str, size: int, limit_error_type: Any) -> None:
+    try:
+        _check_collection_kind("Bytes", size)
+    except RuntimeError as exc:
+        if limit_error_type is RuntimeError:
+            raise
+        raise limit_error_type(f"{fn_name}: {exc}") from exc
+
+
+def _read_limited_bytes_stream(
+    reader: Any, fn_name: str, *, limit_error_type: Any = RuntimeError
+) -> Any:
+    parts: list[Any] = []
+    total = 0
+    while True:
+        chunk = reader.read(8192)
+        if not chunk:
+            break
+        total += len(chunk)
+        _check_limited_bytes_size(fn_name, total, limit_error_type)
+        parts.append(chunk)
+    return b"".join(parts)
+
+
+def _stream_limited_text_lines(reader: Any, callback: Any, fn_name: str) -> Any:
+    limit = _MAX_COLLECTION_SIZE
+    while True:
+        try:
+            raw_line = reader.readline(limit + 2)
+        except UnicodeDecodeError as exc:
+            if fn_name == "stdin_each_line":
+                return Err(f"stdin is not valid UTF-8: {exc}")
+            return Err(str(exc))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        if not raw_line:
+            break
+        if raw_line.endswith("\r\n"):
+            line = raw_line[:-2]
+        elif raw_line.endswith("\n") or raw_line.endswith("\r"):
+            line = raw_line[:-1]
+        else:
+            line = raw_line
+        _check_collection_kind("String", len(line))
+        outcome = callback(line)
+        if isinstance(outcome, Ok):
+            if outcome.value is False:
+                break
+        elif isinstance(outcome, Err):
+            return outcome
+        else:
+            raise RuntimeError(f"{fn_name}: callback must return Result[Bool, String]")
+    return Ok(None)
+
+
+def _stream_limited_bytes_chunks(
+    reader: Any, chunk_size: int, callback: Any, fn_name: str
+) -> Any:
+    while True:
+        try:
+            chunk = reader.read(chunk_size)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        if not chunk:
+            break
+        _check_collection_kind("Bytes", len(chunk))
+        outcome = callback(chunk)
+        if isinstance(outcome, Ok):
+            if outcome.value is False:
+                break
+        elif isinstance(outcome, Err):
+            return outcome
+        else:
+            raise RuntimeError(f"{fn_name}: callback must return Result[Bool, String]")
+    return Ok(None)
+
+
 def _validate_http_target(url: str, fn_name: str) -> None:
     from urllib.parse import urlparse as _urlparse
 
@@ -7079,6 +7190,164 @@ def _run_limited_process(argv, *, input_text=None):
 
 
 # =============================================================================
+# Bytes Operations (always available, immutable binary data)
+# =============================================================================
+
+_HEX_RE = _re.compile(r"^[0-9a-fA-F]*$")
+_BASE64_RE = _re.compile(
+    r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+)
+_B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_B64_DECODE: dict[str, int] = dict(_builtin_zip(_B64_ALPHABET, range(64)))
+
+
+def _require_bytes(func_name: str, value: Any) -> Any:
+    if not isinstance(value, _GenoBytes):
+        raise RuntimeError(f"{func_name}: expected Bytes, got {type(value).__name__}")
+    return value
+
+
+def bytes_from_list(xs: list[Any]) -> Any:
+    if not isinstance(xs, list):
+        raise RuntimeError(f"bytes_from_list expects list, got {type(xs).__name__}")
+    _check_collection_kind("Bytes", len(xs))
+    out: list[int] = []
+    for i, item in _builtin_enumerate(xs):
+        if isinstance(item, bool) or not isinstance(item, int):
+            return Err(f"bytes_from_list: element {i} must be Int")
+        if item < 0 or item > 255:
+            return Err(f"bytes_from_list: byte value {item} out of range 0..255")
+        out.append(item)
+    return Ok(_GenoBytes(out))
+
+
+def bytes_to_list(data: Any) -> list[int]:
+    raw = _require_bytes("bytes_to_list", data)
+    _check_collection_kind("List", len(raw))
+    return list(raw)
+
+
+def bytes_from_utf8(text: Any) -> Any:
+    _require_str("bytes_from_utf8", text, "text")
+    _check_collection_kind("Bytes", len(text))
+    raw = text.encode("utf-8")
+    _check_collection_kind("Bytes", len(raw))
+    return raw
+
+
+def bytes_to_utf8(data: Any) -> Any:
+    raw = _require_bytes("bytes_to_utf8", data)
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        return Err(f"bytes_to_utf8: {exc}")
+    _check_string_result_size("bytes_to_utf8", len(text))
+    return Ok(text)
+
+
+def bytes_from_hex(text: Any) -> Any:
+    _require_str("bytes_from_hex", text, "text")
+    if len(text) % 2 != 0:
+        return Err("bytes_from_hex: hex string must have even length")
+    if not _HEX_RE.fullmatch(text):
+        return Err("bytes_from_hex: invalid hex character")
+    _check_collection_kind("Bytes", len(text) // 2)
+    return Ok(_GenoBytes.fromhex(text))
+
+
+def bytes_to_hex(data: Any) -> str:
+    raw = _require_bytes("bytes_to_hex", data)
+    _check_string_result_size("bytes_to_hex", len(raw) * 2)
+    return str(raw.hex())
+
+
+def bytes_from_base64(text: Any) -> Any:
+    _require_str("bytes_from_base64", text, "text")
+    if not _BASE64_RE.fullmatch(text):
+        return Err("bytes_from_base64: invalid base64 encoding")
+    pad = 2 if text.endswith("==") else (1 if text.endswith("=") else 0)
+    out_len = (len(text) // 4) * 3 - pad
+    _check_collection_kind("Bytes", out_len)
+    if not text:
+        return Ok(b"")
+    table = _B64_DECODE
+    out: list[int] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        c0 = table[text[i]]
+        c1 = table[text[i + 1]]
+        p2 = text[i + 2]
+        p3 = text[i + 3]
+        if p2 == "=":
+            out.append(((c0 << 2) | (c1 >> 4)) & 255)
+        elif p3 == "=":
+            c2 = table[p2]
+            out.append(((c0 << 2) | (c1 >> 4)) & 255)
+            out.append((((c1 & 15) << 4) | (c2 >> 2)) & 255)
+        else:
+            c2 = table[p2]
+            c3 = table[p3]
+            out.append(((c0 << 2) | (c1 >> 4)) & 255)
+            out.append((((c1 & 15) << 4) | (c2 >> 2)) & 255)
+            out.append((((c2 & 3) << 6) | c3) & 255)
+        i += 4
+    return Ok(_GenoBytes(out))
+
+
+def bytes_to_base64(data: Any) -> str:
+    raw = _require_bytes("bytes_to_base64", data)
+    n = len(raw)
+    out_len = ((n + 2) // 3) * 4
+    _check_string_result_size("bytes_to_base64", out_len)
+    if n == 0:
+        return ""
+    alpha = _B64_ALPHABET
+    parts: list[str] = []
+    full = n - (n % 3)
+    i = 0
+    while i < full:
+        v = (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2]
+        parts.append(
+            alpha[(v >> 18) & 63]
+            + alpha[(v >> 12) & 63]
+            + alpha[(v >> 6) & 63]
+            + alpha[v & 63]
+        )
+        i += 3
+    rem = n - full
+    if rem == 1:
+        v = raw[full] << 16
+        parts.append(alpha[(v >> 18) & 63] + alpha[(v >> 12) & 63] + "==")
+    elif rem == 2:
+        v = (raw[full] << 16) | (raw[full + 1] << 8)
+        parts.append(
+            alpha[(v >> 18) & 63] + alpha[(v >> 12) & 63] + alpha[(v >> 6) & 63] + "="
+        )
+    return "".join(parts)
+
+
+def bytes_length(data: Any) -> int:
+    return len(_require_bytes("bytes_length", data))
+
+
+def bytes_slice(data: Any, start: Any, stop: Any) -> Any:
+    raw = _require_bytes("bytes_slice", data)
+    if isinstance(start, bool) or not isinstance(start, int):
+        raise RuntimeError("bytes_slice: start must be an integer")
+    if isinstance(stop, bool) or not isinstance(stop, int):
+        raise RuntimeError("bytes_slice: stop must be an integer")
+    return raw[start:stop]
+
+
+def bytes_concat(left: Any, right: Any) -> Any:
+    lhs = _require_bytes("bytes_concat", left)
+    rhs = _require_bytes("bytes_concat", right)
+    _check_collection_kind("Bytes", len(lhs) + len(rhs))
+    return lhs + rhs
+
+
+# =============================================================================
 # File I/O Builtins (capability-gated: --cap fs)
 # =============================================================================
 
@@ -7135,6 +7404,111 @@ def fs_write_text(path: str, content: str) -> Any:
     except (OSError, RuntimeError, ValueError) as e:
         return Err(str(e))
     return Ok(None)
+
+
+def fs_read_bytes(path: str) -> Any:
+    """Read raw bytes from a file, returning Result[Bytes, String]."""
+    _require_cap("fs", "fs_read_bytes")
+    host = _geno_host_module("fs")
+    if host is not None:
+        try:
+            with host.open_bytes_reader(path, "fs_read_bytes") as f:
+                result = _read_limited_bytes_stream(
+                    f, "fs_read_bytes", limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        return Ok(result)
+    try:
+        resolved = _resolve_fs_path(path, "fs_read_bytes")
+        with open(resolved, "rb") as f:
+            result = _read_limited_bytes_stream(
+                f, "fs_read_bytes", limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(result)
+
+
+def fs_write_bytes(path: str, content: Any) -> Any:
+    """Write raw bytes to a file, returning Result[Unit, String]."""
+    _require_cap("fs", "fs_write_bytes")
+    host = _geno_host_module("fs")
+    if host is not None:
+        host.require_writable("fs_write_bytes")
+        try:
+            host.write_bytes(path, content, "fs_write_bytes")
+        except (OSError, RuntimeError, ValueError, TypeError) as e:
+            return Err(str(e))
+        return Ok(None)
+    if not _fs_writes_allowed():
+        raise RuntimeError("fs_write_bytes: filesystem writes are not allowed")
+    if not isinstance(content, _GenoBytes):
+        return Err("fs_write_bytes: content must be Bytes")
+    try:
+        resolved = _resolve_fs_path(path, "fs_write_bytes")
+        with open(resolved, "wb") as f:
+            f.write(content)
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    return Ok(None)
+
+
+def fs_each_line(path: str, callback: Any) -> Any:
+    """Stream lines of a UTF-8 file to callback, closing the file on exit."""
+    _require_cap("fs", "fs_each_line")
+    host = _geno_host_module("fs")
+    if host is not None:
+        try:
+            f = host.open_text_reader(path, "fs_each_line")
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        with f:
+            return _stream_limited_text_lines(f, callback, "fs_each_line")
+    try:
+        resolved = _resolve_fs_path(path, "fs_each_line")
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    try:
+        with open(resolved, encoding="utf-8") as f:
+            return _stream_limited_text_lines(f, callback, "fs_each_line")
+    except OSError as e:
+        return Err(str(e))
+
+
+def fs_each_chunk(path: str, chunk_size: Any, callback: Any) -> Any:
+    """Stream raw byte chunks of a file to callback, closing the file on exit."""
+    _require_cap("fs", "fs_each_chunk")
+    if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+        return Err("fs_each_chunk: chunk_size must be Int")
+    if chunk_size <= 0:
+        return Err("fs_each_chunk: chunk_size must be positive")
+    _check_collection_kind("Bytes", chunk_size)
+    host = _geno_host_module("fs")
+    if host is not None:
+        try:
+            f = host.open_bytes_reader(path, "fs_each_chunk")
+        except (OSError, RuntimeError, ValueError) as e:
+            return Err(str(e))
+        with f:
+            return _stream_limited_bytes_chunks(
+                f, chunk_size, callback, "fs_each_chunk"
+            )
+    try:
+        resolved = _resolve_fs_path(path, "fs_each_chunk")
+    except (OSError, RuntimeError, ValueError) as e:
+        return Err(str(e))
+    try:
+        with open(resolved, "rb") as f:
+            return _stream_limited_bytes_chunks(
+                f, chunk_size, callback, "fs_each_chunk"
+            )
+    except OSError as e:
+        return Err(str(e))
 
 
 def fs_list_dir(path: str):
@@ -7474,6 +7848,44 @@ def http_fetch(url: str) -> Any:
     return _http_body("GET", url, None, "http_fetch")
 
 
+def http_fetch_bytes(url: str) -> Any:
+    """GET a URL, returning Result[Bytes, String] with the raw response body."""
+    _require_cap("http", "http_fetch_bytes")
+    host = _geno_host_module("http")
+    if host is not None:
+        try:
+            with host.open_body("GET", url, None, "http_fetch_bytes") as resp:
+                result = _read_limited_bytes_stream(
+                    resp, "http_fetch_bytes", limit_error_type=_GenoOutputLimitError
+                )
+        except _GenoOutputLimitError:
+            raise
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return Err(str(e))
+        return Ok(result)
+    from urllib.error import HTTPError
+    from urllib.request import Request
+
+    try:
+        _validate_http_scheme(url, "http_fetch_bytes")
+        req = Request(url, data=None, method="GET")  # noqa: S310
+        try:
+            response_handle = _open_http_url(
+                req, timeout=30, fn_name="http_fetch_bytes"
+            )
+        except HTTPError as http_error:
+            response_handle = http_error
+        with response_handle as resp:
+            result = _read_limited_bytes_stream(
+                resp, "http_fetch_bytes", limit_error_type=_GenoOutputLimitError
+            )
+    except _GenoOutputLimitError:
+        raise
+    except (OSError, ValueError, TypeError, RuntimeError) as e:
+        return Err(str(e))
+    return Ok(result)
+
+
 def http_post(url: str, body: str) -> Any:
     """POST JSON to a URL, returning Result[String, String] with the body."""
     _require_cap("http", "http_post")
@@ -7687,6 +8099,76 @@ def stdin_read_all():
     if isinstance(data, str):
         return _check_collection_size(Ok(data))
     return Err(f"stdin returned unsupported type: {type(data).__name__}")
+
+
+def _stream_limited_utf8_bytes_lines(reader: Any, callback: Any, fn_name: str) -> Any:
+    limit = _MAX_COLLECTION_SIZE
+    max_raw = limit * 4 + 2
+    while True:
+        try:
+            raw_line = reader.readline(max_raw)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return Err(str(exc))
+        if not raw_line:
+            break
+        truncated = not raw_line.endswith(b"\n") and len(raw_line) == max_raw
+        try:
+            decoded, _ = _runtime_codecs.utf_8_decode(raw_line, "strict", not truncated)
+        except UnicodeDecodeError as exc:
+            if fn_name == "stdin_each_line":
+                return Err(f"stdin is not valid UTF-8: {exc}")
+            return Err(str(exc))
+        if decoded.endswith("\r\n"):
+            line = decoded[:-2]
+        elif decoded.endswith("\n") or decoded.endswith("\r"):
+            line = decoded[:-1]
+        else:
+            line = decoded
+        _check_collection_kind("String", len(line))
+        outcome = callback(line)
+        if isinstance(outcome, Ok):
+            if outcome.value is False:
+                break
+        elif isinstance(outcome, Err):
+            return outcome
+        else:
+            raise RuntimeError(f"{fn_name}: callback must return Result[Bool, String]")
+    return Ok(None)
+
+
+def stdin_each_line(callback: Any) -> Any:
+    """Stream UTF-8 lines from stdin to callback."""
+    _require_cap("stdin", "stdin_each_line")
+    host = _geno_host_module("stdin")
+    if host is not None:
+        while True:
+            try:
+                line = host.read_line(
+                    lambda size: _check_collection_kind("String", size)
+                )
+            except OSError as e:
+                return Err(str(e))
+            except UnicodeError as e:
+                return Err(f"stdin is not valid UTF-8: {e}")
+            if line is None:
+                break
+            outcome = callback(line)
+            if isinstance(outcome, Ok):
+                if outcome.value is False:
+                    break
+            elif isinstance(outcome, Err):
+                return outcome
+            else:
+                raise RuntimeError(
+                    "stdin_each_line: callback must return Result[Bool, String]"
+                )
+        return Ok(None)
+    import sys as _sys
+
+    buffered = getattr(_sys.stdin, "buffer", None)
+    if buffered is not None:
+        return _stream_limited_utf8_bytes_lines(buffered, callback, "stdin_each_line")
+    return _stream_limited_text_lines(_sys.stdin, callback, "stdin_each_line")
 
 
 # =============================================================================

@@ -13,6 +13,21 @@ package version stays 0.6.0, and the Draft
 
 ### Added
 
+- First-class `Bytes` type, binary I/O, and scoped streaming I/O across all
+  three backends (interpreter, compiled Python, and compiled JavaScript):
+  - Immutable `Bytes` value type (`bytes` in Python, `Uint8Array` in JS),
+    bounded by `max_collection_size`, with `b[i] -> Int`, `b[a:b] -> Bytes`,
+    `+`, `length(b)`, method syntax, `Ord`/`Hash` support (`sort`, `Map`, `Set`),
+    property-check generation/shrinking, and `extern func` marshaling.
+  - Pure builtins: `bytes_from_list`, `bytes_to_list`, `bytes_from_utf8`,
+    `bytes_to_utf8`, `bytes_from_hex`, `bytes_to_hex`, `bytes_from_base64`,
+    `bytes_to_base64`, `bytes_length`, `bytes_slice`, and `bytes_concat`.
+  - Binary & streaming I/O builtins: `fs_read_bytes`, `fs_write_bytes`,
+    `fs_each_line`, `fs_each_chunk` (`fs`), `http_fetch_bytes` (`http`), and
+    `stdin_each_line` (`stdin`), with sound effect-polymorphic callback
+    checking, guaranteed handle closure in `finally`, isolated-run root &
+    write-quota enforcement, and bounded per-line/per-chunk streaming past
+    `max_collection_size`.
 - Real-world Typed JSON attributes and default record field values across all
   three backends (interpreter, compiled Python, and compiled JavaScript):
   - Type-level `@json(rename_all: ..., unknown: "ignore" | "reject")` supporting

@@ -40,6 +40,7 @@ from .types import (
     ArrayType,
     AsyncType,
     BoolType,
+    BytesType,
     FloatType,
     FuncType,
     IntType,
@@ -263,6 +264,12 @@ class _Builder:
             raise self.fail(type_, "an async computation is not data", where)
         if isinstance(type_, MutableMapType):
             raise self.fail(type_, "use a Map[String, V]", where)
+        if isinstance(type_, BytesType):
+            raise self.fail(
+                type_,
+                "use bytes_to_base64 or bytes_to_hex to represent Bytes in JSON",
+                where,
+            )
         if isinstance(type_, TypeVar) and self.encoding:
             # The element type of `[]` or of `None` that nothing settled: no
             # value has it, so an encoder never reaches this shape.

@@ -1072,6 +1072,23 @@ class Interpreter:
             # sleep_ms is gated behind a host callback (installed by
             # install_clock_callbacks) so RunConfig.capabilities can deny it.
             ("sleep_ms", self._stub_host_callback("sleep_ms"), 1, ["ms"]),
+            # Bytes operations (always available)
+            ("bytes_from_list", _builtins.builtin_bytes_from_list, 1, ["xs"]),
+            ("bytes_to_list", _builtins.builtin_bytes_to_list, 1, ["data"]),
+            ("bytes_from_utf8", _builtins.builtin_bytes_from_utf8, 1, ["text"]),
+            ("bytes_to_utf8", _builtins.builtin_bytes_to_utf8, 1, ["data"]),
+            ("bytes_from_hex", _builtins.builtin_bytes_from_hex, 1, ["text"]),
+            ("bytes_to_hex", _builtins.builtin_bytes_to_hex, 1, ["data"]),
+            ("bytes_from_base64", _builtins.builtin_bytes_from_base64, 1, ["text"]),
+            ("bytes_to_base64", _builtins.builtin_bytes_to_base64, 1, ["data"]),
+            ("bytes_length", _builtins.builtin_bytes_length, 1, ["data"]),
+            (
+                "bytes_slice",
+                _builtins.builtin_bytes_slice,
+                3,
+                ["data", "start", "stop"],
+            ),
+            ("bytes_concat", _builtins.builtin_bytes_concat, 2, ["left", "right"]),
             # Host-callback builtins (stubs until replaced by host)
             ("fs_read_text", self._stub_host_callback("fs_read_text"), 1, ["path"]),
             (
@@ -1079,6 +1096,25 @@ class Interpreter:
                 self._stub_host_callback("fs_write_text"),
                 2,
                 ["path", "content"],
+            ),
+            ("fs_read_bytes", self._stub_host_callback("fs_read_bytes"), 1, ["path"]),
+            (
+                "fs_write_bytes",
+                self._stub_host_callback("fs_write_bytes"),
+                2,
+                ["path", "content"],
+            ),
+            (
+                "fs_each_line",
+                self._stub_host_callback("fs_each_line"),
+                2,
+                ["path", "callback"],
+            ),
+            (
+                "fs_each_chunk",
+                self._stub_host_callback("fs_each_chunk"),
+                3,
+                ["path", "chunk_size", "callback"],
             ),
             ("fs_list_dir", self._stub_host_callback("fs_list_dir"), 1, ["path"]),
             ("fs_exists", self._stub_host_callback("fs_exists"), 1, ["path"]),
@@ -1096,6 +1132,12 @@ class Interpreter:
                 ["path"],
             ),
             ("http_fetch", self._stub_host_callback("http_fetch"), 1, ["url"]),
+            (
+                "http_fetch_bytes",
+                self._stub_host_callback("http_fetch_bytes"),
+                1,
+                ["url"],
+            ),
             ("http_post", self._stub_host_callback("http_post"), 2, ["url", "body"]),
             (
                 "http_request",
@@ -1166,6 +1208,12 @@ class Interpreter:
                 self._stub_host_callback("stdin_read_all"),
                 0,
                 [],
+            ),
+            (
+                "stdin_each_line",
+                self._stub_host_callback("stdin_each_line"),
+                1,
+                ["callback"],
             ),
             # Environment variable builtins (capability-gated)
             ("env_get", _builtins.builtin_env_get, 1, ["name"]),
@@ -1394,9 +1442,13 @@ class Interpreter:
         for item in lst:
             acc = self._call_function(func, [acc, item])
             # Match compiler semantics: check intermediate accumulator size
-            if isinstance(acc, (str, list)):
+            if isinstance(acc, (str, bytes, list)):
                 if len(acc) > limit:
-                    kind = "String" if isinstance(acc, str) else "List"
+                    kind = (
+                        "String"
+                        if isinstance(acc, str)
+                        else ("Bytes" if isinstance(acc, bytes) else "List")
+                    )
                     raise RuntimeLimitError(
                         f"{kind} size exceeds limit ({len(acc)} > {limit})",
                         limit="collection size",
@@ -2445,8 +2497,10 @@ class Interpreter:
                 None if bound is None else self.eval_expr(bound, env)
                 for bound in slice_bounds(expr)
             )
-            if not isinstance(target, (list, str)):
-                raise RuntimeError("A slice takes a List or a String", expr.location)
+            if not isinstance(target, (list, str, bytes)):
+                raise RuntimeError(
+                    "A slice takes a List, a String, or Bytes", expr.location
+                )
             # Python's slicing is the rule: a negative bound counts from the
             # end and one past either end is clamped. Strings slice by code
             # point, like indexing.
@@ -2851,6 +2905,9 @@ class Interpreter:
             elif t is str:
                 if len(value) > size_limit:
                     self._check_collection_size("String", len(value), location)
+            elif t is bytes:
+                if len(value) > size_limit:
+                    self._check_collection_size("Bytes", len(value), location)
             elif not (t is bool or t is float or value is None):
                 break
         else:
@@ -2933,6 +2990,10 @@ class Interpreter:
                 visited.add(value_id)
                 size = len(value)
                 kind = "String"
+            elif isinstance(value, bytes):
+                visited.add(value_id)
+                size = len(value)
+                kind = "Bytes"
             else:
                 continue
 
@@ -3461,6 +3522,16 @@ class Interpreter:
             if position < 0 or position >= len(target):
                 raise RuntimeError(
                     f"Index {_builtins._scalar_text(index)} out of bounds for string of length {len(target)}",
+                    expr.location,
+                )
+            return target[position]
+        elif isinstance(target, bytes):
+            if not isinstance(index, int) or isinstance(index, bool):
+                raise RuntimeError("Bytes index must be integer", expr.location)
+            position = index + len(target) if index < 0 else index
+            if position < 0 or position >= len(target):
+                raise RuntimeError(
+                    f"Index {_builtins._scalar_text(index)} out of bounds for bytes of length {len(target)}",
                     expr.location,
                 )
             return target[position]
@@ -4360,11 +4431,15 @@ class Interpreter:
 
 def _binop_add(interp: "Interpreter", expr: BinaryOp, a: Any, b: Any) -> Any:
     # Pre-check collection size before allocation to prevent OOM
-    if isinstance(a, (str, list)) and isinstance(b, type(a)):
+    if isinstance(a, (str, bytes, list)) and isinstance(b, type(a)):
         expected = len(a) + len(b)
         limit = interp.sandbox_config.max_collection_size
         if expected > limit:
-            kind = "String" if isinstance(a, str) else "List"
+            kind = (
+                "String"
+                if isinstance(a, str)
+                else ("Bytes" if isinstance(a, bytes) else "List")
+            )
             raise RuntimeLimitError(
                 f"{kind} size exceeds limit ({expected} > {limit})",
                 expr.location,

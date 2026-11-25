@@ -288,9 +288,25 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "set_to_list": (["set"], None),
     "set_union": (["a", "b"], None),
     "set_intersection": (["a", "b"], None),
+    # --- Bytes operations (always available, immutable binary data) --------
+    "bytes_from_list": (["xs"], None),
+    "bytes_to_list": (["data"], None),
+    "bytes_from_utf8": (["text"], None),
+    "bytes_to_utf8": (["data"], None),
+    "bytes_from_hex": (["text"], None),
+    "bytes_to_hex": (["data"], None),
+    "bytes_from_base64": (["text"], None),
+    "bytes_to_base64": (["data"], None),
+    "bytes_length": (["data"], None),
+    "bytes_slice": (["data", "start", "stop"], None),
+    "bytes_concat": (["left", "right"], None),
     # --- File I/O (gated by fs) --------------------------------------------
     "fs_read_text": (["path"], "fs"),
     "fs_write_text": (["path", "content"], "fs"),
+    "fs_read_bytes": (["path"], "fs"),
+    "fs_write_bytes": (["path", "content"], "fs"),
+    "fs_each_line": (["path", "callback"], "fs"),
+    "fs_each_chunk": (["path", "chunk_size", "callback"], "fs"),
     "fs_list_dir": (["path"], "fs"),
     "fs_exists": (["path"], "fs"),
     "fs_metadata": (["path"], "fs"),
@@ -302,6 +318,7 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "regex_replace": (["pattern", "replacement", "text"], "regex"),
     # --- HTTP (gated by http) ----------------------------------------------
     "http_fetch": (["url"], "http"),
+    "http_fetch_bytes": (["url"], "http"),
     "http_post": (["url", "body"], "http"),
     "http_request": (["method", "url", "headers", "body"], "http"),
     # --- Serve (gated by serve) --------------------------------------------
@@ -328,6 +345,7 @@ BUILTIN_MANIFEST: dict[str, tuple[list[str], str | None]] = {
     "spawn_with_input": (["program", "args", "stdin"], "process"),
     # --- Standard input (gated by stdin) -----------------------------------
     "stdin_read_all": ([], "stdin"),
+    "stdin_each_line": (["callback"], "stdin"),
     # --- Environment variables (gated by env) ------------------------------
     "env_get": (["name"], "env"),
     "env_get_or": (["name", "default"], "env"),

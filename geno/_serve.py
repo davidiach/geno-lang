@@ -167,6 +167,82 @@ def _read_limited_text_stream(interpreter, reader, fn_name: str) -> str:
     return "".join(parts)
 
 
+def _read_limited_bytes_stream(interpreter: Any, reader: Any, fn_name: str) -> bytes:
+    parts: list[bytes] = []
+    total = 0
+    while True:
+        chunk = reader.read(8192)
+        if not chunk:
+            break
+        total += len(chunk)
+        interpreter._check_collection_size("Bytes", total, None)
+        parts.append(chunk)
+    return b"".join(parts)
+
+
+def _stream_limited_text_lines(
+    interpreter: Any, reader: Any, callback: Any, fn_name: str
+) -> Any:
+    from .values import ConstructorValue, GenoRuntimeError
+
+    limit = interpreter.sandbox_config.max_collection_size
+    while True:
+        try:
+            raw_line = reader.readline(limit + 2)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        if not raw_line:
+            break
+        if raw_line.endswith("\r\n"):
+            line = raw_line[:-2]
+        elif raw_line.endswith("\n") or raw_line.endswith("\r"):
+            line = raw_line[:-1]
+        else:
+            line = raw_line
+        interpreter._check_collection_size("String", len(line), None)
+        outcome = interpreter._call_function(callback, [line])
+        if isinstance(outcome, ConstructorValue) and outcome.constructor == "Ok":
+            if outcome.fields.get("value") is False:
+                break
+        elif isinstance(outcome, ConstructorValue) and outcome.constructor == "Err":
+            return outcome
+        else:
+            raise GenoRuntimeError(
+                f"{fn_name}: callback must return Result[Bool, String]"
+            )
+    return ConstructorValue("Ok", {"value": None})
+
+
+def _stream_limited_bytes_chunks(
+    interpreter: Any,
+    reader: Any,
+    chunk_size: int,
+    callback: Any,
+    fn_name: str,
+) -> Any:
+    from .values import ConstructorValue, GenoRuntimeError
+
+    while True:
+        try:
+            chunk = reader.read(chunk_size)
+        except (OSError, RuntimeError, ValueError) as exc:
+            return ConstructorValue("Err", {"error": str(exc)})
+        if not chunk:
+            break
+        interpreter._check_collection_size("Bytes", len(chunk), None)
+        outcome = interpreter._call_function(callback, [chunk])
+        if isinstance(outcome, ConstructorValue) and outcome.constructor == "Ok":
+            if outcome.fields.get("value") is False:
+                break
+        elif isinstance(outcome, ConstructorValue) and outcome.constructor == "Err":
+            return outcome
+        else:
+            raise GenoRuntimeError(
+                f"{fn_name}: callback must return Result[Bool, String]"
+            )
+    return ConstructorValue("Ok", {"value": None})
+
+
 def _validate_http_target(
     url: str,
     fn_name: str,
@@ -521,6 +597,75 @@ def install_fs_callbacks(
             return ConstructorValue("Err", {"error": str(e)})
         return ConstructorValue("Ok", {"value": None})
 
+    def _fs_read_bytes(path: Any) -> Any:
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_read_bytes", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            with open(resolved, "rb") as f:
+                result = _read_limited_bytes_stream(interpreter, f, "fs_read_bytes")
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return _checked_callback_result(
+            interpreter, ConstructorValue("Ok", {"value": result})
+        )
+
+    def _fs_write_bytes(path: Any, content: Any) -> Any:
+        if not writes_ok:
+            raise RuntimeError("fs_write_bytes: filesystem writes are not allowed")
+        if not isinstance(content, bytes):
+            return ConstructorValue(
+                "Err", {"error": "fs_write_bytes: content must be Bytes"}
+            )
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_write_bytes", fs_roots, allow_absolute_paths=absolute_ok
+            )
+            with open(resolved, "wb") as f:
+                f.write(content)
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return ConstructorValue("Ok", {"value": None})
+
+    def _fs_each_line(path: Any, callback: Any) -> Any:
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_each_line", fs_roots, allow_absolute_paths=absolute_ok
+            )
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        try:
+            with open(resolved, encoding="utf-8") as handle:
+                return _stream_limited_text_lines(
+                    interpreter, handle, callback, "fs_each_line"
+                )
+        except OSError as e:
+            return ConstructorValue("Err", {"error": str(e)})
+
+    def _fs_each_chunk(path: Any, chunk_size: Any, callback: Any) -> Any:
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+            return ConstructorValue(
+                "Err", {"error": "fs_each_chunk: chunk_size must be Int"}
+            )
+        if chunk_size <= 0:
+            return ConstructorValue(
+                "Err", {"error": "fs_each_chunk: chunk_size must be positive"}
+            )
+        interpreter._check_collection_size("Bytes", chunk_size, None)
+        try:
+            resolved = _resolve_scoped_path(
+                path, "fs_each_chunk", fs_roots, allow_absolute_paths=absolute_ok
+            )
+        except (OSError, RuntimeError, ValueError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        try:
+            with open(resolved, "rb") as handle:
+                return _stream_limited_bytes_chunks(
+                    interpreter, handle, chunk_size, callback, "fs_each_chunk"
+                )
+        except OSError as e:
+            return ConstructorValue("Err", {"error": str(e)})
+
     def _fs_list_dir(path):
         try:
             path = _resolve_scoped_path(
@@ -594,6 +739,24 @@ def install_fs_callbacks(
     interpreter.global_env.bind(
         "fs_write_text",
         BuiltinFunction("fs_write_text", _fs_write_text, 2, ["path", "content"]),
+    )
+    interpreter.global_env.bind(
+        "fs_read_bytes",
+        BuiltinFunction("fs_read_bytes", _fs_read_bytes, 1, ["path"]),
+    )
+    interpreter.global_env.bind(
+        "fs_write_bytes",
+        BuiltinFunction("fs_write_bytes", _fs_write_bytes, 2, ["path", "content"]),
+    )
+    interpreter.global_env.bind(
+        "fs_each_line",
+        BuiltinFunction("fs_each_line", _fs_each_line, 2, ["path", "callback"]),
+    )
+    interpreter.global_env.bind(
+        "fs_each_chunk",
+        BuiltinFunction(
+            "fs_each_chunk", _fs_each_chunk, 3, ["path", "chunk_size", "callback"]
+        ),
     )
     interpreter.global_env.bind(
         "fs_list_dir", BuiltinFunction("fs_list_dir", _fs_list_dir, 1, ["path"])
@@ -877,6 +1040,28 @@ def install_http_callbacks(
     def _http_fetch(url):
         return _http_body("GET", url, None, "http_fetch")
 
+    def _http_fetch_bytes(url: Any) -> Any:
+        try:
+            _check_scheme(url, "http_fetch_bytes")
+            response_handle = _send_http_request(
+                "GET",
+                url,
+                [],
+                None,
+                "http_fetch_bytes",
+                allow_private_networks=private_networks_ok,
+                timeout=request_timeout,
+            )
+            with response_handle as resp:
+                result = _read_limited_bytes_stream(
+                    interpreter, resp, "http_fetch_bytes"
+                )
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
+            return ConstructorValue("Err", {"error": str(e)})
+        return _checked_callback_result(
+            interpreter, ConstructorValue("Ok", {"value": result})
+        )
+
     def _http_post(url, body):
         return _http_body("POST", url, body.encode("utf-8"), "http_post")
 
@@ -915,6 +1100,10 @@ def install_http_callbacks(
 
     interpreter.global_env.bind(
         "http_fetch", BuiltinFunction("http_fetch", _http_fetch, 1, ["url"])
+    )
+    interpreter.global_env.bind(
+        "http_fetch_bytes",
+        BuiltinFunction("http_fetch_bytes", _http_fetch_bytes, 1, ["url"]),
     )
     interpreter.global_env.bind(
         "http_post", BuiltinFunction("http_post", _http_post, 2, ["url", "body"])
@@ -1169,8 +1358,63 @@ def install_stdin_callbacks(interpreter) -> None:
             interpreter, ConstructorValue("Ok", {"value": data})
         )
 
+    def _stdin_each_line(callback: Any) -> Any:
+        buffered = getattr(sys.stdin, "buffer", None)
+        if buffered is not None:
+            from .values import GenoRuntimeError
+
+            limit = interpreter.sandbox_config.max_collection_size
+            max_raw = limit * 4 + 2
+            while True:
+                try:
+                    raw_line = buffered.readline(max_raw)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    return ConstructorValue("Err", {"error": str(exc)})
+                if not raw_line:
+                    break
+                import codecs
+
+                truncated = not raw_line.endswith(b"\n") and len(raw_line) == max_raw
+                try:
+                    decoded, _ = codecs.utf_8_decode(raw_line, "strict", not truncated)
+                except UnicodeDecodeError as exc:
+                    return ConstructorValue(
+                        "Err", {"error": f"stdin is not valid UTF-8: {exc}"}
+                    )
+                if decoded.endswith("\r\n"):
+                    line = decoded[:-2]
+                elif decoded.endswith("\n") or decoded.endswith("\r"):
+                    line = decoded[:-1]
+                else:
+                    line = decoded
+                interpreter._check_collection_size("String", len(line), None)
+                outcome = interpreter._call_function(callback, [line])
+                if (
+                    isinstance(outcome, ConstructorValue)
+                    and outcome.constructor == "Ok"
+                ):
+                    if outcome.fields.get("value") is False:
+                        break
+                elif (
+                    isinstance(outcome, ConstructorValue)
+                    and outcome.constructor == "Err"
+                ):
+                    return outcome
+                else:
+                    raise GenoRuntimeError(
+                        "stdin_each_line: callback must return Result[Bool, String]"
+                    )
+            return ConstructorValue("Ok", {"value": None})
+        return _stream_limited_text_lines(
+            interpreter, sys.stdin, callback, "stdin_each_line"
+        )
+
     interpreter.global_env.bind(
         "stdin_read_all", BuiltinFunction("stdin_read_all", _stdin_read_all, 0, [])
+    )
+    interpreter.global_env.bind(
+        "stdin_each_line",
+        BuiltinFunction("stdin_each_line", _stdin_each_line, 1, ["callback"]),
     )
 
 

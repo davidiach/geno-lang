@@ -180,6 +180,10 @@ function _checkCollectionSize(result, kindOverride = null) {
             _checkCollectionKind(item.kindOverride || "String", _stringLength(value));
             continue;
         }
+        if (value instanceof globalThis.Uint8Array) {
+            _checkCollectionKind(item.kindOverride || "Bytes", value.length);
+            continue;
+        }
         if (typeof value === 'number' && _GENO_NUMBER.isInteger(value)) {
             _checkIntegerBits(value);
             continue;
@@ -312,6 +316,14 @@ class _GenoFString {
         }
         if (typeof value !== "object") {
             this.append(_GENO_STRING(value));
+            return;
+        }
+        if (value instanceof globalThis.Uint8Array) {
+            this.append("Bytes(");
+            for (let i = 0; i < value.length; i++) {
+                this.append(value[i].toString(16).padStart(2, "0"));
+            }
+            this.append(")");
             return;
         }
         if (this.active.has(value)) {
@@ -625,6 +637,13 @@ function _valuesEqual(a, b) {
         }
         return true;
     }
+    if (a instanceof globalThis.Uint8Array && b instanceof globalThis.Uint8Array) {
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) return false;
+        }
+        return true;
+    }
     if (Array.isArray(a) && Array.isArray(b)) {
         if (a.length !== b.length) return false;
         for (let i = 0; i < a.length; i++) {
@@ -779,6 +798,9 @@ function _genoSortKey(value, seen) {
     if (value instanceof GenoVec) {
         return [12, value._elements.map(item => _genoSortKey(item, seen))];
     }
+    if (value instanceof globalThis.Uint8Array) {
+        return [13, Array.from(value)];
+    }
     return [99, typeof value, _GENO_STRING(value)];
 }
 
@@ -800,6 +822,14 @@ function _compareGenoSortKeys(left, right) {
     if (typeof left === 'string' && typeof right === 'string') {
         return _comparePythonStrings(left, right);
     }
+    if (left instanceof globalThis.Uint8Array && right instanceof globalThis.Uint8Array) {
+        const len = _GENO_MATH.min(left.length, right.length);
+        for (let i = 0; i < len; i += 1) {
+            if (left[i] < right[i]) return -1;
+            if (left[i] > right[i]) return 1;
+        }
+        return left.length - right.length;
+    }
     const leftText = _GENO_STRING(left);
     const rightText = _GENO_STRING(right);
     return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
@@ -818,6 +848,14 @@ function _compareOrderedValues(left, right) {
     }
     if (typeof left === 'string' && typeof right === 'string') {
         return _comparePythonStrings(left, right);
+    }
+    if (left instanceof globalThis.Uint8Array && right instanceof globalThis.Uint8Array) {
+        const len = _GENO_MATH.min(left.length, right.length);
+        for (let i = 0; i < len; i += 1) {
+            if (left[i] < right[i]) return -1;
+            if (left[i] > right[i]) return 1;
+        }
+        return left.length - right.length;
     }
     if (typeof left === 'boolean' && typeof right === 'boolean') {
         return left === right ? 0 : left ? 1 : -1;
@@ -882,12 +920,24 @@ function _constructorFormatter(value) {
     return _BUILTIN_TAG_FORMATTERS[value._tag];
 }
 
+function _formatBytes(value) {
+    let hex = "";
+    for (let i = 0; i < value.length; i++) {
+        hex += value[i].toString(16).padStart(2, "0");
+    }
+    return "Bytes(" + hex + ")";
+}
+
 function _formatValue(value) {
     if (value === null || value === undefined) return '()';
     if (typeof value === 'boolean') return _GENO_STRING(value);
     if (typeof value === 'string') return _reprString(value);
     if (typeof value === 'number') {
         return _GENO_NUMBER.isFinite(value) ? _GENO_STRING(value) : _formatFloat(value);
+    }
+    if (value instanceof globalThis.Uint8Array) {
+        _checkCollectionKind("String", 7 + value.length * 2);
+        return _formatBytes(value);
     }
     if (value instanceof GenoArray) return 'Array([' + value._elements.map(_formatValue).join(', ') + '])';
     if (Array.isArray(value)) return '[' + value.map(_formatValue).join(', ') + ']';
@@ -940,6 +990,10 @@ function _stringifyValue(value, seen, topLevel = true) {
     if (typeof value === 'boolean') return _GENO_STRING(value);
     if (typeof value === 'number') {
         return _GENO_NUMBER.isFinite(value) ? _GENO_STRING(value) : _formatFloat(value);
+    }
+    if (value instanceof globalThis.Uint8Array) {
+        _checkCollectionKind("String", 7 + value.length * 2);
+        return _formatBytes(value);
     }
     if (value instanceof GenoArray) {
         return "Array([" + value._elements.map(item => _stringifyValue(item, seen, false)).join(", ") + "])";
@@ -1127,6 +1181,9 @@ function _safe_add(a, b) {
     }
     // List + List concatenates; JavaScript's own + would join them as text.
     if (Array.isArray(a) && Array.isArray(b)) return concat(a, b);
+    if (a instanceof globalThis.Uint8Array && b instanceof globalThis.Uint8Array) {
+        return bytes_concat(a, b);
+    }
     const result = a + b;
     if (typeof result === 'string' || Array.isArray(result)) _checkCollectionSize(result);
     return result;
@@ -1254,6 +1311,12 @@ function _safe_index(target, index) {
         const position = index < 0 ? index + chars.length : index;
         if (position < 0 || position >= chars.length) throw new Error("Index " + index + " out of bounds");
         return chars[position];
+    }
+    if (target instanceof globalThis.Uint8Array) {
+        if (!_GENO_NUMBER.isInteger(index)) throw new Error("Bytes index must be integer");
+        const position = index < 0 ? index + target.length : index;
+        if (position < 0 || position >= target.length) throw new Error("Index " + index + " out of bounds");
+        return target[position];
     }
     if (target instanceof _GENO_MAP) {
         const value = _mapGetValue(target, index);
@@ -1393,7 +1456,10 @@ function _genoSlice(target, start, stop) {
     if (typeof target === 'string') {
         return _stringCodePoints(target).slice(start, stop).join("");
     }
-    throw new Error("A slice takes a List or a String");
+    if (target instanceof globalThis.Uint8Array) {
+        return target.slice(start, stop);
+    }
+    throw new Error("A slice takes a List, a String, or Bytes");
 }
 
 function _safe_index_set(target, index, value) {
@@ -3128,6 +3194,198 @@ function _processEnv() {
 }
 
 // =============================================================================
+// Bytes Operations (always available, immutable binary data)
+// =============================================================================
+
+const _BYTES_HEX_RE = /^[0-9a-fA-F]*$/;
+const _BYTES_B64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const _BYTES_B64_ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const _BYTES_B64_TABLE = (() => {
+    const table = Object.create(null);
+    for (let i = 0; i < _BYTES_B64_ALPHA.length; i++) {
+        table[_BYTES_B64_ALPHA[i]] = i;
+    }
+    return table;
+})();
+
+function _requireBytes(funcName, value) {
+    if (!(value instanceof globalThis.Uint8Array)) {
+        throw new Error(funcName + ": expected Bytes, got " + typeof value);
+    }
+    return value;
+}
+
+function _bytesFromBase64Raw(text) {
+    const n = text.length;
+    if (n === 0) return new globalThis.Uint8Array(0);
+    const pad = text.endsWith("==") ? 2 : (text.endsWith("=") ? 1 : 0);
+    const outLen = (n / 4) * 3 - pad;
+    _checkCollectionKind("Bytes", outLen);
+    const out = new globalThis.Uint8Array(outLen);
+    let pos = 0;
+    for (let i = 0; i < n; i += 4) {
+        const c0 = _BYTES_B64_TABLE[text[i]];
+        const c1 = _BYTES_B64_TABLE[text[i + 1]];
+        const p2 = text[i + 2];
+        const p3 = text[i + 3];
+        if (p2 === "=") {
+            out[pos++] = ((c0 << 2) | (c1 >> 4)) & 255;
+        } else if (p3 === "=") {
+            const c2 = _BYTES_B64_TABLE[p2];
+            out[pos++] = ((c0 << 2) | (c1 >> 4)) & 255;
+            out[pos++] = (((c1 & 15) << 4) | (c2 >> 2)) & 255;
+        } else {
+            const c2 = _BYTES_B64_TABLE[p2];
+            const c3 = _BYTES_B64_TABLE[p3];
+            out[pos++] = ((c0 << 2) | (c1 >> 4)) & 255;
+            out[pos++] = (((c1 & 15) << 4) | (c2 >> 2)) & 255;
+            out[pos++] = (((c2 & 3) << 6) | c3) & 255;
+        }
+    }
+    return out;
+}
+
+function bytes_from_list(xs) {
+    if (!Array.isArray(xs)) {
+        throw new Error("bytes_from_list expects list, got " + typeof xs);
+    }
+    _checkCollectionKind("Bytes", xs.length);
+    const out = new globalThis.Uint8Array(xs.length);
+    for (let i = 0; i < xs.length; i++) {
+        const item = xs[i];
+        if (typeof item !== "number" || !_GENO_NUMBER.isInteger(item)) {
+            return Err("bytes_from_list: element " + i + " must be Int");
+        }
+        if (item < 0 || item > 255) {
+            return Err("bytes_from_list: byte value " + item + " out of range 0..255");
+        }
+        out[i] = item;
+    }
+    return Ok(out);
+}
+
+function bytes_to_list(data) {
+    const raw = _requireBytes("bytes_to_list", data);
+    _checkCollectionKind("List", raw.length);
+    return Array.from(raw);
+}
+
+function bytes_from_utf8(text) {
+    if (typeof text !== "string") {
+        throw new Error("bytes_from_utf8: text must be a string");
+    }
+    _checkCollectionKind("Bytes", text.length);
+    const raw = new globalThis.TextEncoder().encode(text);
+    _checkCollectionKind("Bytes", raw.length);
+    return raw;
+}
+
+function bytes_to_utf8(data) {
+    const raw = _requireBytes("bytes_to_utf8", data);
+    let text;
+    try {
+        text = new globalThis.TextDecoder("utf-8", { fatal: true }).decode(raw);
+    } catch (e) {
+        return Err("bytes_to_utf8: " + (e && e.message ? e.message : _GENO_STRING(e)));
+    }
+    _checkStringResultSize("bytes_to_utf8", _stringLength(text));
+    return Ok(text);
+}
+
+function bytes_from_hex(text) {
+    if (typeof text !== "string") {
+        throw new Error("bytes_from_hex: text must be a string");
+    }
+    if (text.length % 2 !== 0) {
+        return Err("bytes_from_hex: hex string must have even length");
+    }
+    if (!_BYTES_HEX_RE.test(text)) {
+        return Err("bytes_from_hex: invalid hex character");
+    }
+    const outLen = text.length / 2;
+    _checkCollectionKind("Bytes", outLen);
+    const out = new globalThis.Uint8Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+        out[i] = _GENO_NUMBER.parseInt(text.slice(i * 2, i * 2 + 2), 16);
+    }
+    return Ok(out);
+}
+
+function bytes_to_hex(data) {
+    const raw = _requireBytes("bytes_to_hex", data);
+    _checkStringResultSize("bytes_to_hex", raw.length * 2);
+    let hex = "";
+    for (let i = 0; i < raw.length; i++) {
+        hex += raw[i].toString(16).padStart(2, "0");
+    }
+    return hex;
+}
+
+function bytes_from_base64(text) {
+    if (typeof text !== "string") {
+        throw new Error("bytes_from_base64: text must be a string");
+    }
+    if (!_BYTES_B64_RE.test(text)) {
+        return Err("bytes_from_base64: invalid base64 encoding");
+    }
+    return Ok(_bytesFromBase64Raw(text));
+}
+
+function bytes_to_base64(data) {
+    const raw = _requireBytes("bytes_to_base64", data);
+    const n = raw.length;
+    const outLen = _GENO_MATH.floor((n + 2) / 3) * 4;
+    _checkStringResultSize("bytes_to_base64", outLen);
+    if (n === 0) return "";
+    const parts = [];
+    const full = n - (n % 3);
+    for (let i = 0; i < full; i += 3) {
+        const v = (raw[i] << 16) | (raw[i + 1] << 8) | raw[i + 2];
+        parts.push(
+            _BYTES_B64_ALPHA[(v >> 18) & 63]
+            + _BYTES_B64_ALPHA[(v >> 12) & 63]
+            + _BYTES_B64_ALPHA[(v >> 6) & 63]
+            + _BYTES_B64_ALPHA[v & 63]
+        );
+    }
+    const rem = n - full;
+    if (rem === 1) {
+        const v = raw[full] << 16;
+        parts.push(_BYTES_B64_ALPHA[(v >> 18) & 63] + _BYTES_B64_ALPHA[(v >> 12) & 63] + "==");
+    } else if (rem === 2) {
+        const v = (raw[full] << 16) | (raw[full + 1] << 8);
+        parts.push(
+            _BYTES_B64_ALPHA[(v >> 18) & 63]
+            + _BYTES_B64_ALPHA[(v >> 12) & 63]
+            + _BYTES_B64_ALPHA[(v >> 6) & 63]
+            + "="
+        );
+    }
+    return parts.join("");
+}
+
+function bytes_length(data) {
+    return _requireBytes("bytes_length", data).length;
+}
+
+function bytes_slice(data, start, stop) {
+    const raw = _requireBytes("bytes_slice", data);
+    if (!_GENO_NUMBER.isInteger(start)) throw new Error("bytes_slice: start must be an integer");
+    if (!_GENO_NUMBER.isInteger(stop)) throw new Error("bytes_slice: stop must be an integer");
+    return raw.slice(start, stop);
+}
+
+function bytes_concat(left, right) {
+    const lhs = _requireBytes("bytes_concat", left);
+    const rhs = _requireBytes("bytes_concat", right);
+    _checkCollectionKind("Bytes", lhs.length + rhs.length);
+    const out = new globalThis.Uint8Array(lhs.length + rhs.length);
+    out.set(lhs, 0);
+    out.set(rhs, lhs.length);
+    return out;
+}
+
+// =============================================================================
 // File I/O Builtins (capability-gated: --cap fs, Node.js only)
 // =============================================================================
 
@@ -3157,6 +3415,184 @@ function fs_write_text(path, content) {
         _genoQuietly(() => fs.writeFileSync(path, content, "utf-8"));
     } catch (e) {
         return { _tag: "Err", error: e.message };
+    }
+    return Ok(null);
+}
+
+function fs_read_bytes(path) {
+    _requireCap("fs", "fs_read_bytes");
+    if (typeof require === "undefined") {
+        return { _tag: "Err", error: "fs_read_bytes is not available in browser context" };
+    }
+    const fs = require("fs");
+    let fd;
+    try {
+        fd = _genoQuietly(() => fs.openSync(path, "r"));
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    const chunks = [];
+    let total = 0;
+    const buf = new globalThis.Uint8Array(8192);
+    try {
+        while (true) {
+            let bytesRead;
+            try {
+                bytesRead = _genoQuietly(() => fs.readSync(fd, buf, 0, buf.length, null));
+            } catch (e) {
+                return { _tag: "Err", error: e.message };
+            }
+            if (bytesRead === 0) break;
+            total += bytesRead;
+            _checkCollectionKind("Bytes", total);
+            chunks.push(buf.slice(0, bytesRead));
+        }
+    } finally {
+        try { fs.closeSync(fd); } catch (_ignored) {}
+    }
+    const result = new globalThis.Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+        result.set(chunk, offset);
+        offset += chunk.length;
+    }
+    return Ok(result);
+}
+
+function fs_write_bytes(path, content) {
+    _requireCap("fs", "fs_write_bytes");
+    if (typeof require === "undefined") {
+        return { _tag: "Err", error: "fs_write_bytes is not available in browser context" };
+    }
+    if (!(content instanceof globalThis.Uint8Array)) {
+        return { _tag: "Err", error: "fs_write_bytes: content must be Bytes" };
+    }
+    const fs = require("fs");
+    try {
+        _genoQuietly(() => fs.writeFileSync(path, content));
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    return Ok(null);
+}
+
+function fs_each_line(path, callback) {
+    _requireCap("fs", "fs_each_line");
+    if (typeof require === "undefined") {
+        return { _tag: "Err", error: "fs_each_line is not available in browser context" };
+    }
+    const fs = require("fs");
+    let fd;
+    try {
+        fd = _genoQuietly(() => fs.openSync(path, "r"));
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    const decoder = new globalThis.TextDecoder("utf-8", { fatal: true });
+    const buf = new globalThis.Uint8Array(8192);
+    let pending = "";
+    try {
+        while (true) {
+            let bytesRead;
+            try {
+                bytesRead = _genoQuietly(() => fs.readSync(fd, buf, 0, buf.length, null));
+            } catch (e) {
+                return { _tag: "Err", error: e.message };
+            }
+            let decoded;
+            try {
+                decoded = bytesRead === 0
+                    ? decoder.decode()
+                    : decoder.decode(buf.subarray(0, bytesRead), { stream: true });
+            } catch (e) {
+                return { _tag: "Err", error: e.message };
+            }
+            pending += decoded;
+            while (true) {
+                const nl = pending.indexOf("\n");
+                if (nl === -1) break;
+                let line = pending.slice(0, nl);
+                pending = pending.slice(nl + 1);
+                if (line.endsWith("\r")) line = line.slice(0, -1);
+                _checkCollectionKind("String", _stringLength(line));
+                const outcome = callback(line);
+                if (isConstructor(outcome) && outcome._tag === "Ok") {
+                    if (outcome.value === false) return Ok(null);
+                } else if (isConstructor(outcome) && outcome._tag === "Err") {
+                    return outcome;
+                } else {
+                    throw new Error("fs_each_line: callback must return Result[Bool, String]");
+                }
+            }
+            if (bytesRead === 0) {
+                if (pending.length > 0) {
+                    let line = pending;
+                    if (line.endsWith("\r")) line = line.slice(0, -1);
+                    _checkCollectionKind("String", _stringLength(line));
+                    const outcome = callback(line);
+                    if (isConstructor(outcome) && outcome._tag === "Ok") {
+                        return Ok(null);
+                    } else if (isConstructor(outcome) && outcome._tag === "Err") {
+                        return outcome;
+                    } else {
+                        throw new Error("fs_each_line: callback must return Result[Bool, String]");
+                    }
+                }
+                break;
+            }
+            const pendingLineLen = pending.endsWith("\r")
+                ? _stringLength(pending.slice(0, -1))
+                : _stringLength(pending);
+            _checkCollectionKind("String", pendingLineLen);
+        }
+    } finally {
+        try { fs.closeSync(fd); } catch (_ignored) {}
+    }
+    return Ok(null);
+}
+
+function fs_each_chunk(path, chunkSize, callback) {
+    _requireCap("fs", "fs_each_chunk");
+    if (typeof require === "undefined") {
+        return { _tag: "Err", error: "fs_each_chunk is not available in browser context" };
+    }
+    if (typeof chunkSize !== "number" || !_GENO_NUMBER.isInteger(chunkSize)) {
+        return { _tag: "Err", error: "fs_each_chunk: chunk_size must be Int" };
+    }
+    if (chunkSize <= 0) {
+        return { _tag: "Err", error: "fs_each_chunk: chunk_size must be positive" };
+    }
+    _checkCollectionKind("Bytes", chunkSize);
+    const fs = require("fs");
+    let fd;
+    try {
+        fd = _genoQuietly(() => fs.openSync(path, "r"));
+    } catch (e) {
+        return { _tag: "Err", error: e.message };
+    }
+    const buf = new globalThis.Uint8Array(chunkSize);
+    try {
+        while (true) {
+            let bytesRead;
+            try {
+                bytesRead = _genoQuietly(() => fs.readSync(fd, buf, 0, chunkSize, null));
+            } catch (e) {
+                return { _tag: "Err", error: e.message };
+            }
+            if (bytesRead === 0) break;
+            const chunk = buf.slice(0, bytesRead);
+            _checkCollectionKind("Bytes", chunk.length);
+            const outcome = callback(chunk);
+            if (isConstructor(outcome) && outcome._tag === "Ok") {
+                if (outcome.value === false) return Ok(null);
+            } else if (isConstructor(outcome) && outcome._tag === "Err") {
+                return outcome;
+            } else {
+                throw new Error("fs_each_chunk: callback must return Result[Bool, String]");
+            }
+        }
+    } finally {
+        try { fs.closeSync(fd); } catch (_ignored) {}
     }
     return Ok(null);
 }
@@ -3629,6 +4065,25 @@ function _nodeHttpBridgeMain() {
         return entries;
     }
 
+    async function readBodyBytes(response) {
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of response) {
+            size += chunk.length;
+            if (size > requestEnvelope.maxCollectionSize) {
+                response.destroy();
+                const error = new Error(
+                    "Bytes size exceeds limit ("
+                    + size + " > " + requestEnvelope.maxCollectionSize + ")"
+                );
+                error.code = "GENO_COLLECTION_LIMIT";
+                throw error;
+            }
+            chunks.push(chunk);
+        }
+        return Buffer.concat(chunks).toString("base64");
+    }
+
     async function readBody(response) {
         const decoder = new TextDecoder("utf-8");
         const parts = [];
@@ -3716,6 +4171,14 @@ function _nodeHttpBridgeMain() {
                 response.destroy();
                 continue;
             }
+            if (requestEnvelope.binary) {
+                return {
+                    ok: true,
+                    status: response.statusCode || 0,
+                    bodyBase64: await readBodyBytes(response),
+                    headers: rawHeaderEntries(response),
+                };
+            }
             return {
                 ok: true,
                 status: response.statusCode || 0,
@@ -3736,12 +4199,15 @@ function _nodeHttpBridgeMain() {
     });
 }
 
-function _syncFetch(method, url, headers, body, builtinName) {
+function _syncFetch(method, url, headers, body, builtinName, binary = false) {
     const normalizedMethod = String(method).toUpperCase();
     const requestBody = (
         (normalizedMethod === "GET" || normalizedMethod === "HEAD") && body === ""
     ) ? null : body;
     if (typeof require === "undefined") {
+        if (binary) {
+            return { ok: false, status: 0, bodyBase64: "", headers: [], error: builtinName + " is not supported synchronously in browser context" };
+        }
         return _syncBrowserFetch(normalizedMethod, url, headers, requestBody);
     }
     const cp = require("child_process");
@@ -3752,13 +4218,14 @@ function _syncFetch(method, url, headers, body, builtinName) {
         headers: headerEntries,
         body: requestBody,
         builtinName,
+        binary,
         maxCollectionSize: _MAX_COLLECTION_SIZE,
     });
     const script = "(" + _nodeHttpBridgeMain.toString() + ")()";
-    // JSON may use six transport characters for one Geno code point.
+    // JSON may use six transport characters for one Geno code point (or 4/3 for base64).
     const maxBuffer = _GENO_MATH.min(
         _GENO_NUMBER.MAX_SAFE_INTEGER,
-        _MAX_COLLECTION_SIZE * 6 + 65536
+        _MAX_COLLECTION_SIZE * (binary ? 2 : 6) + 65536
     );
     const result = cp.execFileSync(process.execPath, ["-e", script], {
         encoding: "utf-8",
@@ -3794,6 +4261,22 @@ function _httpBody(method, url, headers, body, builtinName) {
 function http_fetch(url) {
     _requireCap("http", "http_fetch");
     return _httpBody("GET", url, null, null, "http_fetch");
+}
+
+function http_fetch_bytes(url) {
+    _requireCap("http", "http_fetch_bytes");
+    let r;
+    try {
+        _validateHttpScheme(url, "http_fetch_bytes");
+        r = _syncFetch("GET", url, null, null, "http_fetch_bytes", true);
+    } catch (e) {
+        if (e && e._genoCollectionLimit) throw e;
+        return { _tag: "Err", error: e.message };
+    }
+    if (!r.ok) return { _tag: "Err", error: r.error };
+    const raw = _bytesFromBase64Raw(r.bodyBase64 || "");
+    _checkCollectionKind("Bytes", raw.length);
+    return Ok(raw);
 }
 
 function http_post(url, body) {
@@ -5384,6 +5867,7 @@ function _genoExternToHost(value, shape, types = null, depth = 0) {
             "an argument nested more than " + _GENO_EXTERN_MAX_DEPTH + " levels deep");
     }
     if (kind === "int" || kind === "float" || kind === "string" || kind === "bool") return value;
+    if (kind === "bytes") return new globalThis.Uint8Array(value);
     if (kind === "unit") return null;
     if (kind === "list") return value.map(item => _genoExternToHost(item, shape[1], types, depth + 1));
     if (kind === "tuple") {
@@ -5505,6 +5989,11 @@ function _genoExternFromHost(value, shape, path, depth, types = null) {
         if (typeof value !== "string") _genoExternMismatch(path, "String", value);
         _genoExternSize("String", _stringLength(value));
         return value;
+    }
+    if (kind === "bytes") {
+        if (!(value instanceof globalThis.Uint8Array)) _genoExternMismatch(path, "Bytes", value);
+        _genoExternSize("Bytes", value.length);
+        return new globalThis.Uint8Array(value);
     }
     if (kind === "bool") {
         if (typeof value !== "boolean") _genoExternMismatch(path, "Bool", value);
@@ -5788,6 +6277,7 @@ function _genoValueToJsonString(value) {
         || value instanceof GenoMutableMap
         || value instanceof GenoVec
         || value instanceof GenoSet
+        || value instanceof globalThis.Uint8Array
     ) {
         return _jsonStringLiteral(_stringifyValue(value));
     }

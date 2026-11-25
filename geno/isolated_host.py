@@ -703,7 +703,7 @@ class IsolatedStdin(IsolatedHostBinding):
     what bounds it, and the kernel releases the handle with the worker.
     """
 
-    __slots__ = ("_eof", "_fd")
+    __slots__ = ("_eof", "_fd", "_offset", "_pending_bytes", "_pending_text")
 
     def __init__(self, fd: int | None) -> None:
         if fd is not None and (
@@ -712,6 +712,9 @@ class IsolatedStdin(IsolatedHostBinding):
             raise ValueError("the program input handle must be a descriptor >= 3")
         self._fd = fd
         self._eof = False
+        self._pending_bytes = b""
+        self._pending_text = ""
+        self._offset = 0
 
     def read_chunk(self, size: int = STDIN_CHUNK_BYTES) -> bytes:
         """Read at most *size* bytes; ``b""`` at, and after, the end of input."""
@@ -738,8 +741,14 @@ class IsolatedStdin(IsolatedHostBinding):
         """
         parts: list[str] = []
         decoded = 0
-        pending = b""
-        offset = 0  # the stream position of pending[0]
+        if self._pending_text:
+            parts.append(self._pending_text)
+            decoded += len(self._pending_text)
+            self._pending_text = ""
+            check_size(decoded)
+        pending = self._pending_bytes
+        self._pending_bytes = b""
+        offset = self._offset
         while True:
             chunk = self.read_chunk()
             final = not chunk
@@ -756,8 +765,51 @@ class IsolatedStdin(IsolatedHostBinding):
                 check_size(decoded)
             offset += consumed
             pending = data[consumed:]
+            self._offset = offset
             if final:
                 return "".join(parts)
+
+    def read_line(self, check_size: Callable[[int], object]) -> str | None:
+        """Read the next UTF-8 line (stripping trailing ``\\r\\n`` or ``\\n``), or ``None`` at EOF."""
+        while True:
+            newline_index = self._pending_text.find("\n")
+            if newline_index != -1:
+                line = self._pending_text[:newline_index]
+                self._pending_text = self._pending_text[newline_index + 1 :]
+                if line.endswith("\r"):
+                    line = line[:-1]
+                check_size(len(line))
+                return line
+            if self._pending_text:
+                # Check accumulated line length even before seeing '\n'.
+                pending_len = (
+                    len(self._pending_text) - 1
+                    if self._pending_text.endswith("\r")
+                    else len(self._pending_text)
+                )
+                check_size(pending_len)
+            chunk = self.read_chunk()
+            final = not chunk
+            data = self._pending_bytes + chunk
+            try:
+                text, consumed = codecs.utf_8_decode(data, "strict", final)
+            except UnicodeDecodeError as error:
+                raise IsolatedStdinDecodeError(
+                    _stream_decode_error_message(error, self._offset)
+                ) from None
+            self._offset += consumed
+            self._pending_bytes = data[consumed:]
+            if text:
+                self._pending_text += text
+            if final:
+                if not self._pending_text:
+                    return None
+                line = self._pending_text
+                self._pending_text = ""
+                if line.endswith("\r"):
+                    line = line[:-1]
+                check_size(len(line))
+                return line
 
 
 class IsolatedQuotaError(RuntimeError):
@@ -848,6 +900,13 @@ class IsolatedFs(IsolatedHostBinding):
         The caller reads it with its own bounded reader and closes it.
         """
         return open(self._resolve(path, fn_name), encoding="utf-8")
+
+    def open_bytes_reader(self, path: Any, fn_name: str) -> IO[bytes]:
+        """Open a file inside the roots for reading raw bytes.
+
+        The caller reads it with its own bounded reader and closes it.
+        """
+        return open(self._resolve(path, fn_name), "rb")
 
     def list_dir(self, path: Any, fn_name: str) -> list[str]:
         """The sorted entry names of a directory inside the roots."""
@@ -955,6 +1014,16 @@ class IsolatedFs(IsolatedHostBinding):
         self._reserve(len(data), fn_name)
         with open(resolved, "wb") as handle:
             handle.write(data)
+
+    def write_bytes(self, path: Any, content: Any, fn_name: str) -> None:
+        """Replace a file inside the roots with raw bytes, within both limits."""
+        self.require_writable(fn_name)
+        resolved = self._resolve(path, fn_name)
+        if not isinstance(content, bytes):
+            raise TypeError(f"{fn_name}: content must be Bytes")
+        self._reserve(len(content), fn_name)
+        with open(resolved, "wb") as handle:
+            handle.write(content)
 
 
 # The shortest timeout an HTTP connection attempt gets once the run's
@@ -1270,8 +1339,38 @@ def _install_example_stdin_callbacks(
             return ConstructorValue("Err", {"error": str(error)})
         return ConstructorValue("Ok", {"value": text})
 
+    def _stdin_each_line(callback: Any) -> Any:
+        from .values import GenoRuntimeError
+
+        while True:
+            try:
+                line = stdin.read_line(_check_size)
+            except IsolatedStdinDecodeError as error:
+                return ConstructorValue(
+                    "Err", {"error": f"stdin is not valid UTF-8: {error}"}
+                )
+            except OSError as error:
+                return ConstructorValue("Err", {"error": str(error)})
+            if line is None:
+                break
+            outcome = interpreter._call_function(callback, [line])
+            if isinstance(outcome, ConstructorValue) and outcome.constructor == "Ok":
+                if outcome.fields.get("value") is False:
+                    break
+            elif isinstance(outcome, ConstructorValue) and outcome.constructor == "Err":
+                return outcome
+            else:
+                raise GenoRuntimeError(
+                    "stdin_each_line: callback must return Result[Bool, String]"
+                )
+        return ConstructorValue("Ok", {"value": None})
+
     interpreter.global_env.bind(
         "stdin_read_all", BuiltinFunction("stdin_read_all", _stdin_read_all, 0, [])
+    )
+    interpreter.global_env.bind(
+        "stdin_each_line",
+        BuiltinFunction("stdin_each_line", _stdin_each_line, 1, ["callback"]),
     )
 
 
@@ -1287,7 +1386,10 @@ def _install_example_fs_callbacks(interpreter: Interpreter, fs: IsolatedFs) -> N
     from ._serve import (
         _checked_callback_result,
         _metadata_value_from_parts,
+        _read_limited_bytes_stream,
         _read_limited_text_stream,
+        _stream_limited_bytes_chunks,
+        _stream_limited_text_lines,
     )
     from .values import BuiltinFunction, ConstructorValue
 
@@ -1314,6 +1416,51 @@ def _install_example_fs_callbacks(interpreter: Interpreter, fs: IsolatedFs) -> N
         except (OSError, RuntimeError, ValueError) as error:
             return _err(error)
         return ConstructorValue("Ok", {"value": None})
+
+    def _fs_read_bytes(path: Any) -> Any:
+        try:
+            with fs.open_bytes_reader(path, "fs_read_bytes") as reader:
+                data = _read_limited_bytes_stream(interpreter, reader, "fs_read_bytes")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        return _ok(data)
+
+    def _fs_write_bytes(path: Any, content: Any) -> Any:
+        fs.require_writable("fs_write_bytes")
+        try:
+            fs.write_bytes(path, content, "fs_write_bytes")
+        except (OSError, RuntimeError, ValueError, TypeError) as error:
+            return _err(error)
+        return ConstructorValue("Ok", {"value": None})
+
+    def _fs_each_line(path: Any, callback: Any) -> Any:
+        try:
+            reader = fs.open_text_reader(path, "fs_each_line")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        with reader:
+            return _stream_limited_text_lines(
+                interpreter, reader, callback, "fs_each_line"
+            )
+
+    def _fs_each_chunk(path: Any, chunk_size: Any, callback: Any) -> Any:
+        if isinstance(chunk_size, bool) or not isinstance(chunk_size, int):
+            return ConstructorValue(
+                "Err", {"error": "fs_each_chunk: chunk_size must be Int"}
+            )
+        if chunk_size <= 0:
+            return ConstructorValue(
+                "Err", {"error": "fs_each_chunk: chunk_size must be positive"}
+            )
+        interpreter._check_collection_size("Bytes", chunk_size, None)
+        try:
+            reader = fs.open_bytes_reader(path, "fs_each_chunk")
+        except (OSError, RuntimeError, ValueError) as error:
+            return _err(error)
+        with reader:
+            return _stream_limited_bytes_chunks(
+                interpreter, reader, chunk_size, callback, "fs_each_chunk"
+            )
 
     def _fs_list_dir(path: Any) -> Any:
         try:
@@ -1349,6 +1496,10 @@ def _install_example_fs_callbacks(interpreter: Interpreter, fs: IsolatedFs) -> N
     for name, function, params in (
         ("fs_read_text", _fs_read_text, ["path"]),
         ("fs_write_text", _fs_write_text, ["path", "content"]),
+        ("fs_read_bytes", _fs_read_bytes, ["path"]),
+        ("fs_write_bytes", _fs_write_bytes, ["path", "content"]),
+        ("fs_each_line", _fs_each_line, ["path", "callback"]),
+        ("fs_each_chunk", _fs_each_chunk, ["path", "chunk_size", "callback"]),
         ("fs_list_dir", _fs_list_dir, ["path"]),
         ("fs_exists", _fs_exists, ["path"]),
         ("fs_metadata", _fs_metadata, ["path"]),

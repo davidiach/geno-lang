@@ -146,6 +146,7 @@ from .types import (
     ArrayType,
     AsyncType,
     BoolType,
+    BytesType,
     FloatType,
     FuncType,
     IntType,
@@ -2791,6 +2792,7 @@ class JSCompiler(BaseCompiler):
             "Float",
             "Bool",
             "String",
+            "Bytes",
             "Unit",
         }
     )
@@ -2866,6 +2868,8 @@ class JSCompiler(BaseCompiler):
                 return BoolType()
             if type_annot.name == "String" and not params:
                 return StringType()
+            if type_annot.name == "Bytes" and not params:
+                return BytesType()
             if type_annot.name == "Unit" and not params:
                 return UnitType()
             if type_annot.name == "List" and params:
@@ -3067,6 +3071,9 @@ class JSCompiler(BaseCompiler):
             if mode == "stringify":
                 return f"_reprString({value_ref})"
             return f"_formatValue({value_ref})"
+
+        if isinstance(resolved_type, BytesType):
+            return f"_formatBytes({value_ref})"
 
         if isinstance(resolved_type, IntType):
             return f"_GENO_STRING({value_ref})"
@@ -3280,6 +3287,9 @@ class JSCompiler(BaseCompiler):
         if isinstance(resolved_type, StringType):
             return value_ref
 
+        if isinstance(resolved_type, BytesType):
+            return f"_formatBytes({value_ref})"
+
         if isinstance(resolved_type, IntType):
             return f"_GENO_STRING({value_ref})"
 
@@ -3408,6 +3418,9 @@ class JSCompiler(BaseCompiler):
 
         if isinstance(resolved_type, StringType):
             return f"_jsonStringLiteral({value_ref})"
+
+        if isinstance(resolved_type, BytesType):
+            return f"_jsonStringLiteral(_formatBytes({value_ref}))"
 
         if isinstance(resolved_type, IntType):
             return f"_GENO_STRING({value_ref})"
@@ -4961,6 +4974,7 @@ def _geno_type_to_ts(type_annot, *, unit_as_null: bool = False) -> str:
             "Float": "number",
             "Bool": "boolean",
             "String": "string",
+            "Bytes": "Uint8Array",
             "Unit": "null" if unit_as_null else "void",
         }
         if name in type_map and not params:

@@ -27,6 +27,7 @@ from .capabilities import (
 from .types import (
     ArrayType,
     BoolType,
+    BytesType,
     FloatType,
     FuncType,
     IntType,
@@ -500,9 +501,53 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
     "sleep_ms": FuncType((IntType(),), UnitType()),
     "random_int": FuncType((IntType(), IntType()), IntType()),
     "random_float": FuncType((), FloatType()),
+    "bytes_from_list": FuncType(
+        (ListType(IntType()),), ResultType(BytesType(), StringType())
+    ),
+    "bytes_to_list": FuncType((BytesType(),), ListType(IntType())),
+    "bytes_from_utf8": FuncType((StringType(),), BytesType()),
+    "bytes_to_utf8": FuncType((BytesType(),), ResultType(StringType(), StringType())),
+    "bytes_from_hex": FuncType((StringType(),), ResultType(BytesType(), StringType())),
+    "bytes_to_hex": FuncType((BytesType(),), StringType()),
+    "bytes_from_base64": FuncType(
+        (StringType(),), ResultType(BytesType(), StringType())
+    ),
+    "bytes_to_base64": FuncType((BytesType(),), StringType()),
+    "bytes_length": FuncType((BytesType(),), IntType()),
+    "bytes_slice": FuncType((BytesType(), IntType(), IntType()), BytesType()),
+    "bytes_concat": FuncType((BytesType(), BytesType()), BytesType()),
     "fs_read_text": FuncType((StringType(),), ResultType(StringType(), StringType())),
     "fs_write_text": FuncType(
         (StringType(), StringType()), ResultType(UnitType(), StringType())
+    ),
+    "fs_read_bytes": FuncType((StringType(),), ResultType(BytesType(), StringType())),
+    "fs_write_bytes": FuncType(
+        (StringType(), BytesType()), ResultType(UnitType(), StringType())
+    ),
+    "fs_each_line": FuncType(
+        (
+            StringType(),
+            FuncType(
+                (StringType(),),
+                ResultType(BoolType(), StringType()),
+                VALID_EFFECTS,
+            ),
+        ),
+        ResultType(UnitType(), StringType()),
+        effect_polymorphic=True,
+    ),
+    "fs_each_chunk": FuncType(
+        (
+            StringType(),
+            IntType(),
+            FuncType(
+                (BytesType(),),
+                ResultType(BoolType(), StringType()),
+                VALID_EFFECTS,
+            ),
+        ),
+        ResultType(UnitType(), StringType()),
+        effect_polymorphic=True,
     ),
     "fs_list_dir": FuncType(
         (StringType(),), ResultType(ListType(StringType()), StringType())
@@ -518,6 +563,9 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
         (StringType(),), ResultType(StringType(), StringType())
     ),
     "http_fetch": FuncType((StringType(),), ResultType(StringType(), StringType())),
+    "http_fetch_bytes": FuncType(
+        (StringType(),), ResultType(BytesType(), StringType())
+    ),
     "http_post": FuncType(
         (StringType(), StringType()), ResultType(StringType(), StringType())
     ),
@@ -583,6 +631,17 @@ _BUILTIN_SIGNATURES: dict[str, FuncType] = {
         ResultType(UserType("ProcessResult"), StringType()),
     ),
     "stdin_read_all": FuncType((), ResultType(StringType(), StringType())),
+    "stdin_each_line": FuncType(
+        (
+            FuncType(
+                (StringType(),),
+                ResultType(BoolType(), StringType()),
+                VALID_EFFECTS,
+            ),
+        ),
+        ResultType(UnitType(), StringType()),
+        effect_polymorphic=True,
+    ),
     "env_get": FuncType((StringType(),), OptionType(StringType())),
     "env_get_or": FuncType((StringType(), StringType()), StringType()),
     "cli_args": FuncType((), ListType(StringType())),
@@ -692,7 +751,12 @@ def build_builtin_signatures() -> dict[str, FuncType]:
     for name, sig in _BUILTIN_SIGNATURES.items():
         effects = _effect_for_source_builtin(name)
         if effects:
-            sig = FuncType(sig.param_types, sig.return_type, effects)
+            sig = FuncType(
+                sig.param_types,
+                sig.return_type,
+                effects,
+                effect_polymorphic=sig.effect_polymorphic,
+            )
         result[name] = sig
     return result
 

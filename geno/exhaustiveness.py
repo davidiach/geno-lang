@@ -23,6 +23,7 @@ from .ast_nodes import (
 from .tokens import SourceLocation
 from .types import (
     BoolType,
+    BytesType,
     FloatType,
     IntType,
     ListType,
@@ -92,7 +93,7 @@ class ExhaustivenessMixin:
         if not self._supports_exhaustiveness(scrutinee_type):
             if isinstance(
                 scrutinee_type,
-                (IntType, FloatType, StringType),
+                (IntType, FloatType, StringType, BytesType),
             ):
                 self._error(
                     f"Non-exhaustive patterns: match on {scrutinee_type} "
@@ -283,6 +284,8 @@ class ExhaustivenessMixin:
             return "<float>"
         if isinstance(t, StringType):
             return "<string>"
+        if isinstance(t, BytesType):
+            return "<bytes>"
         if isinstance(t, ListType):
             return "[...]"
         if isinstance(t, TupleType):
