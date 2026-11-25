@@ -67,6 +67,7 @@
   <url><loc>https://geno-lang.org/docs/proposals/0024-test-backends.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/0025-extern-functions.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/0026-cold-write-forms.html</loc></url>
+  <url><loc>https://geno-lang.org/docs/proposals/0027-bytes-and-streaming-io.html</loc></url>
   <url><loc>https://geno-lang.org/docs/proposals/README.html</loc></url>
   <url><loc>https://geno-lang.org/docs/reference/capabilities.html</loc></url>
   <url><loc>https://geno-lang.org/docs/reference/common-pitfalls.html</loc></url>

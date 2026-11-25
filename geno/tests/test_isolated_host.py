@@ -1787,6 +1787,10 @@ def test_fs_binding_exposes_no_attributes(tmp_path: Any) -> None:
 FS_BUILTIN_CALLS = {
     "fs_read_text": ("a.txt",),
     "fs_write_text": ("b.txt", "text"),
+    "fs_read_bytes": ("a.txt",),
+    "fs_write_bytes": ("b.txt", b"bytes"),
+    "fs_each_line": ("a.txt", lambda _line: None),
+    "fs_each_chunk": ("a.txt", 4, lambda _chunk: None),
     "fs_list_dir": (".",),
     "fs_exists": ("a.txt",),
     "fs_metadata": ("a.txt",),
@@ -2198,6 +2202,7 @@ def test_http_support_is_preloaded_only_with_the_grant(
 
 HTTP_BUILTIN_CALLS = {
     "http_fetch": ("{url}/fetch",),
+    "http_fetch_bytes": ("{url}/fetch",),
     "http_post": ("{url}/post", "{{}}"),
     "http_request": ("GET", "{url}/request", [("X-Test", "1")], ""),
 }

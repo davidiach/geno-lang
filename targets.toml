@@ -213,6 +213,34 @@ node-cli = "capability-gated"
 browser = "unavailable"
 python-hosted = "capability-gated"
 
+[builtins.fs_read_bytes]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
+[builtins.fs_write_bytes]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
+[builtins.fs_each_line]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
+[builtins.fs_each_chunk]
+capability = "fs"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "unavailable"
+python-hosted = "capability-gated"
+
 [builtins.fs_list_dir]
 capability = "fs"
 python-cli = "capability-gated"
@@ -251,6 +279,13 @@ python-hosted = "capability-gated"
 # --- HTTP builtins ---
 
 [builtins.http_fetch]
+capability = "http"
+python-cli = "capability-gated"
+node-cli = "capability-gated"
+browser = "capability-gated"
+python-hosted = "capability-gated"
+
+[builtins.http_fetch_bytes]
 capability = "http"
 python-cli = "capability-gated"
 node-cli = "capability-gated"
@@ -327,6 +362,13 @@ python-hosted = "unavailable"
 # --- Standard input builtins (Python CLI only) ---
 
 [builtins.stdin_read_all]
+capability = "stdin"
+python-cli = "capability-gated"
+node-cli = "unavailable"
+browser = "unavailable"
+python-hosted = "unavailable"
+
+[builtins.stdin_each_line]
 capability = "stdin"
 python-cli = "capability-gated"
 node-cli = "unavailable"

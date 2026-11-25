@@ -120,6 +120,7 @@ from .types import (
     ArrayType,
     AsyncType,
     BoolType,
+    BytesType,
     FloatType,
     FuncType,
     GenericInstance,
@@ -156,6 +157,7 @@ _INT_TYPE = IntType()
 _FLOAT_TYPE = FloatType()
 _BOOL_TYPE = BoolType()
 _STRING_TYPE = StringType()
+_BYTES_TYPE = BytesType()
 _UNIT_TYPE = UnitType()
 _NUMERIC_TYPEVAR_NAMES = frozenset({"Num"})
 _BUILTIN_SIMPLE_TYPES = {
@@ -163,6 +165,7 @@ _BUILTIN_SIMPLE_TYPES = {
     "Float": _FLOAT_TYPE,
     "Bool": _BOOL_TYPE,
     "String": _STRING_TYPE,
+    "Bytes": _BYTES_TYPE,
     "Unit": _UNIT_TYPE,
 }
 # Built-in algebraic types the checker registers before reading a program.
@@ -223,6 +226,7 @@ _METHOD_PREFIXES: dict[type, str] = {
     ArrayType: "array",
     SetType: "set",
     StringType: "string",
+    BytesType: "bytes",
 }
 
 
@@ -1607,7 +1611,9 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(type_, TypeParam):
             # Without a bound a caller may instantiate it with a list.
             return type_.has_bound("Hash")
-        if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
+        if isinstance(
+            type_, (IntType, FloatType, BoolType, StringType, BytesType, UnitType)
+        ):
             return True
         if isinstance(type_, TupleType):
             return all(
@@ -3906,6 +3912,23 @@ class TypeChecker(ExhaustivenessMixin):
                 effects |= methods[method_name].effects
         return FuncType(param_types, return_type, effects)
 
+    def _callback_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
+        """Effects performed when an effect-polymorphic builtin calls *expr*."""
+        if isinstance(expr, LambdaExpr):
+            lambda_env = env.child()
+            for param in expr.params:
+                param_type = getattr(param, "_resolved_type", None) or _ANY_TYPE
+                lambda_env.bind(param.name, param_type)
+            if expr.block_body is not None:
+                return set(self._infer_body_effects(expr.block_body, lambda_env))
+            if expr.body is not None:
+                return self._infer_expr_effects(expr.body, lambda_env)
+            return set()
+        arg_type = self._check_expression(expr, env)
+        if isinstance(arg_type, FuncType):
+            return set(arg_type.effects)
+        return set()
+
     def _infer_expr_effects(self, expr: Expression, env: TypeEnv) -> set[str]:
         """Infer effects from an expression."""
         effects: set[str] = set()
@@ -3923,6 +3946,9 @@ class TypeChecker(ExhaustivenessMixin):
             callee_type = self._check_expression(callee, env)
             if isinstance(callee_type, FuncType):
                 effects |= callee_type.effects
+                if callee_type.effect_polymorphic:
+                    for arg in expr.arguments:
+                        effects |= self._callback_expr_effects(arg.value, env)
 
             if isinstance(callee, Identifier):
                 effects |= self._trait_dispatch_effects(expr, env)
@@ -3965,6 +3991,10 @@ class TypeChecker(ExhaustivenessMixin):
                 callee_type = self._check_expression(stage.function, env)
                 if isinstance(callee_type, FuncType):
                     effects |= callee_type.effects
+                    if callee_type.effect_polymorphic:
+                        effects |= self._callback_expr_effects(expr.initial, env)
+                        for stage_arg in stage.arguments:
+                            effects |= self._callback_expr_effects(stage_arg, env)
                 for stage_arg in stage.arguments:
                     effects |= self._infer_expr_effects(stage_arg, env)
 
@@ -5228,7 +5258,7 @@ class TypeChecker(ExhaustivenessMixin):
         if bound == "Num":
             return isinstance(type_, (IntType, FloatType))
         if bound == "Ord":
-            return isinstance(type_, (IntType, FloatType, StringType))
+            return isinstance(type_, (IntType, FloatType, StringType, BytesType))
         if bound == "Hash":
             return self._is_hashable_type(type_)
         if isinstance(type_, UserType):
@@ -5833,11 +5863,11 @@ class TypeChecker(ExhaustivenessMixin):
                     f"Slice {name} must be Int, got {_display_type(bound_type)}",
                     bound.location,
                 )
-        if isinstance(target_type, (ListType, StringType, AnyType)):
+        if isinstance(target_type, (ListType, StringType, BytesType, AnyType)):
             return target_type
         self._error(
             f"Cannot slice {_display_type(target_type)}: a slice takes part of "
-            "a List or a String",
+            "a List, a String, or Bytes",
             expr.location,
         )
         return _ANY_TYPE
@@ -5940,6 +5970,12 @@ class TypeChecker(ExhaustivenessMixin):
                 return _STRING_TYPE
             if (
                 expr.operator == "+"
+                and isinstance(left_type, BytesType)
+                and isinstance(right_type, BytesType)
+            ):
+                return _BYTES_TYPE
+            if (
+                expr.operator == "+"
                 and isinstance(left_type, ListType)
                 and isinstance(right_type, ListType)
             ):
@@ -6024,7 +6060,9 @@ class TypeChecker(ExhaustivenessMixin):
             return True
         if isinstance(left_type, TypeParam) and left_type == right_type:
             return left_type.has_bound("Ord")
-        return isinstance(left_type, StringType) and isinstance(right_type, StringType)
+        return (
+            isinstance(left_type, StringType) and isinstance(right_type, StringType)
+        ) or (isinstance(left_type, BytesType) and isinstance(right_type, BytesType))
 
     @staticmethod
     def _num_param_arithmetic(left_type: Type, right_type: Type) -> Type | None:
@@ -6147,12 +6185,12 @@ class TypeChecker(ExhaustivenessMixin):
                 arguments, ["list"], expr.location
             )
             arg_type = self._check_expression(arguments[0].value, env)
-            if not isinstance(arg_type, (ListType, StringType, ArrayType)):
+            if not isinstance(arg_type, (ListType, StringType, BytesType, ArrayType)):
                 target = self._overload_target(expr, arg_type, env)
                 if target is not None:
                     return self._check_overloaded_call(expr, target, env)
                 self._error(
-                    f"Argument 1 type mismatch: expected List[T], String, or Array[T], got {arg_type}",
+                    f"Argument 1 type mismatch: expected List[T], String, Bytes, or Array[T], got {arg_type}",
                     arguments[0].value.location,
                 )
             return _INT_TYPE
@@ -6650,7 +6688,7 @@ class TypeChecker(ExhaustivenessMixin):
             return method_name
 
         if method_name == "length" and isinstance(
-            receiver_type, (ListType, StringType, ArrayType)
+            receiver_type, (ListType, StringType, BytesType, ArrayType)
         ):
             # `length` is checked specially: it takes a list, string or array.
             if self._identifier_resolves_to_builtin("length", env):
@@ -6855,6 +6893,10 @@ class TypeChecker(ExhaustivenessMixin):
                     f"String index must be Int, got {index_type}", expr.location
                 )
             return StringType()
+        elif isinstance(target_type, BytesType):
+            if not isinstance(index_type, IntType):
+                self._error(f"Bytes index must be Int, got {index_type}", expr.location)
+            return _INT_TYPE
         elif isinstance(target_type, MapType):
             if not self._types_compatible(target_type.key_type, index_type):
                 self._error(
@@ -8392,7 +8434,16 @@ class TypeChecker(ExhaustivenessMixin):
             ret_ok = matches(expected.return_type, actual.return_type)
             # Effect subtyping: actual effects must be a subset of expected effects
             # (a function that does less is acceptable where more is expected)
-            effects_ok = actual.effects <= expected.effects
+            actual_effects = actual.effects
+            if actual.effect_polymorphic:
+                actual_effects = actual_effects | frozenset().union(
+                    *(
+                        param.effects
+                        for param in expected.param_types
+                        if isinstance(param, FuncType)
+                    )
+                )
+            effects_ok = actual_effects <= expected.effects
             return params_ok and ret_ok and effects_ok
 
         if isinstance(expected, UserType) and isinstance(actual, UserType):
@@ -8443,7 +8494,14 @@ class TypeChecker(ExhaustivenessMixin):
         # Primitive types (IntType, FloatType, BoolType, StringType, UnitType)
         # are singletons — same class means same type.
         # Unknown type pair — reject rather than silently accepting
-        return type(expected) in (IntType, FloatType, BoolType, StringType, UnitType)
+        return type(expected) in (
+            IntType,
+            FloatType,
+            BoolType,
+            StringType,
+            BytesType,
+            UnitType,
+        )
 
     # -----------------------------------------------------------------
     # TypeVar substitution tracking for generic function calls
@@ -8652,7 +8710,16 @@ class TypeChecker(ExhaustivenessMixin):
             )
             ret_ok = recurse(expected.return_type, actual.return_type)
             # Effect subtyping: actual effects must be subset of expected
-            effects_ok = actual.effects <= expected.effects
+            actual_effects = actual.effects
+            if actual.effect_polymorphic:
+                actual_effects = actual_effects | frozenset().union(
+                    *(
+                        param.effects
+                        for param in expected.param_types
+                        if isinstance(param, FuncType)
+                    )
+                )
+            effects_ok = actual_effects <= expected.effects
             return params_ok and ret_ok and effects_ok
 
         if isinstance(expected, UserType) and isinstance(actual, UserType):
@@ -8697,7 +8764,14 @@ class TypeChecker(ExhaustivenessMixin):
         if isinstance(expected, AsyncType) and isinstance(actual, AsyncType):
             return recurse(expected.result_type, actual.result_type)
 
-        return type(expected) in (IntType, FloatType, BoolType, StringType, UnitType)
+        return type(expected) in (
+            IntType,
+            FloatType,
+            BoolType,
+            StringType,
+            BytesType,
+            UnitType,
+        )
 
 
 def type_check(program: Program) -> None:

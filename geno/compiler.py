@@ -1478,6 +1478,7 @@ class Compiler(BaseCompiler, ASTVisitor):
                 "Float": "float",
                 "Bool": "bool",
                 "String": "str",
+                "Bytes": "_GenoBytes",
                 "Unit": "None",
             }
 
@@ -3181,11 +3182,11 @@ class Compiler(BaseCompiler, ASTVisitor):
 
     @staticmethod
     def _is_indexable_type(expr: Expression) -> bool:
-        """Check if a typechecked expression has List or String type."""
-        from .types import ListType, StringType
+        """Check if a typechecked expression has List, String, or Bytes type."""
+        from .types import BytesType, ListType, StringType
 
         t = getattr(expr, "_resolved_type", None)
-        return isinstance(t, (ListType, StringType))
+        return isinstance(t, (ListType, StringType, BytesType))
 
     def _compile_comprehension_iterable(self, iterable: Expression) -> str:
         """Compile a comprehension's iterable with assignment expressions

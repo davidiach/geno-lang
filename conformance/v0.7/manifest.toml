@@ -594,3 +594,22 @@ kind = "run"
 targets = ["interpreter", "python", "js"]
 capabilities = ["print"]
 expected_stdout = "{\"eventId\":1,\"created-at\":\"2026-01-01\",\"type\":\"deploy\",\"retryCount\":3,\"note\":\"default\"}\ntrue\ntrue\nErr(error: \"$: unknown field \\\"extra\\\"\")\n\"in_progress\"\ntrue\n"
+
+[[cases]]
+id = "bytes-operations"
+path = "programs/bytes_operations.geno"
+kind = "run"
+targets = [
+    "interpreter",
+    "cli-process",
+    "cli-direct",
+    "cli-json",
+    "python",
+    "js",
+    "js-esm",
+]
+capabilities = ["print"]
+expected_stdout = "3\n486921\nSGkh\nBytes(486921)\ntrue\n72\n6921\n4142\ntrue\n"
+expected_exit_status = 0
+expected_stderr = ""
+expected_json_value = '{"_tuple": []}'

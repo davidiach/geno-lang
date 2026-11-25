@@ -140,6 +140,8 @@ The following builtins require no capabilities and work on every target:
 
 **JSON/Data:** `json_parse`, `json_stringify`, `csv_parse`, `csv_parse_with_headers`, `toml_parse`
 
+**Bytes operations:** `bytes_from_list`, `bytes_to_list`, `bytes_from_utf8`, `bytes_to_utf8`, `bytes_from_hex`, `bytes_to_hex`, `bytes_from_base64`, `bytes_to_base64`, `bytes_length`, `bytes_slice`, `bytes_concat`
+
 ### Capability-Gated Builtins
 
 | Builtin | Capability | python-cli | node-cli | browser | python-hosted |
@@ -168,12 +170,17 @@ The following builtins require no capabilities and work on every target:
 | `sleep_ms` | clock | Cap: clock | -- | -- | -- |
 | `fs_read_text` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_write_text` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_read_bytes` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_write_bytes` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_each_line` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
+| `fs_each_chunk` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_list_dir` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_exists` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_metadata` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_symlink_metadata` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `fs_canonicalize` | fs | Cap: fs | Cap: fs | -- | Cap: fs |
 | `http_fetch` | http | Cap: http | Cap: http | Cap: http | Cap: http |
+| `http_fetch_bytes` | http | Cap: http | Cap: http | Cap: http | Cap: http |
 | `http_post` | http | Cap: http | Cap: http | Cap: http | Cap: http |
 | `http_request` | http | Cap: http | Cap: http | Cap: http | Cap: http |
 | `http_listen` | serve | Cap: serve | -- | -- | Cap: serve |
@@ -184,6 +191,7 @@ The following builtins require no capabilities and work on every target:
 | `spawn` | process | Cap: process | -- | -- | -- |
 | `spawn_with_input` | process | Cap: process | -- | -- | -- |
 | `stdin_read_all` | stdin | Cap: stdin | -- | -- | -- |
+| `stdin_each_line` | stdin | Cap: stdin | -- | -- | -- |
 | `env_get` | env | Cap: env | Cap: env | -- | Cap: env |
 | `env_get_or` | env | Cap: env | Cap: env | -- | Cap: env |
 | `cli_args` | env | Cap: env | Cap: env | -- | Cap: env |

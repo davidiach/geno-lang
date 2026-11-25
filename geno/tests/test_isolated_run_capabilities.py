@@ -989,6 +989,63 @@ BUILTIN_MATRIX.update(
             [],
             "written\n",
         ),
+        "fs_read_bytes": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'fs_read_bytes("data.txt")',
+                    "bytes_to_utf8(value).unwrap()",
+                )
+            ),
+            [],
+            f"{MATRIX_VALUE}\n",
+        ),
+        "fs_write_bytes": (
+            _FS_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'fs_write_bytes("out.bin", bytes_from_utf8("written"))',
+                    'bytes_to_utf8(fs_read_bytes("out.bin").unwrap()).unwrap()',
+                )
+            ),
+            [],
+            "written\n",
+        ),
+        "fs_each_line": (
+            _FS_MATRIX_FLAGS,
+            (
+                "func main() -> Unit with fs, io\n"
+                '    let r = fs_each_line("data.txt", fn(line: String) do\n'
+                "        print(line)\n"
+                "        return Ok(true)\n"
+                "    end fn)\n"
+                "    match r with\n"
+                "        | Ok(_) -> return ()\n"
+                "        | Err(e) -> panic(e)\n"
+                "    end match\n"
+                "end func\n"
+            ),
+            [],
+            f"{MATRIX_VALUE}\n",
+        ),
+        "fs_each_chunk": (
+            _FS_MATRIX_FLAGS,
+            (
+                "func main() -> Unit with fs, io\n"
+                '    let r = fs_each_chunk(path: "data.txt", chunk_size: 64, '
+                "callback: fn(chunk: Bytes) do\n"
+                "        print(bytes_to_utf8(chunk).unwrap())\n"
+                "        return Ok(true)\n"
+                "    end fn)\n"
+                "    match r with\n"
+                "        | Ok(_) -> return ()\n"
+                "        | Err(e) -> panic(e)\n"
+                "    end match\n"
+                "end func\n"
+            ),
+            [],
+            f"{MATRIX_VALUE}\n",
+        ),
         "fs_list_dir": (
             _FS_MATRIX_FLAGS,
             _fs_matrix_program(
@@ -1052,6 +1109,17 @@ BUILTIN_MATRIX.update(
             [],
             "GET /fetch \n",
         ),
+        "http_fetch_bytes": (
+            _HTTP_MATRIX_FLAGS,
+            _fs_matrix_program(
+                _fs_matrix_match(
+                    'http_fetch_bytes("@URL@/fetch")',
+                    "bytes_to_utf8(value).unwrap()",
+                )
+            ),
+            [],
+            "GET /fetch \n",
+        ),
         "http_post": (
             _HTTP_MATRIX_FLAGS,
             _fs_matrix_program(
@@ -1072,11 +1140,31 @@ BUILTIN_MATRIX.update(
             [],
             "200 PUT /request sent\n",
         ),
+        "stdin_each_line": (
+            ["--cap", "stdin,print"],
+            (
+                "func main() -> Unit with stdin, io\n"
+                "    let r = stdin_each_line(fn(line: String) do\n"
+                "        print(line)\n"
+                "        return Ok(true)\n"
+                "    end fn)\n"
+                "    match r with\n"
+                "        | Ok(_) -> return ()\n"
+                "        | Err(e) -> panic(e)\n"
+                "    end match\n"
+                "end func\n"
+            ),
+            [],
+            f"{MATRIX_VALUE}\n",
+        ),
     }
 )
 
 # The standard input each matrix entry is run with.
-MATRIX_STDIN = {"stdin_read_all": MATRIX_VALUE}
+MATRIX_STDIN = {
+    "stdin_read_all": MATRIX_VALUE,
+    "stdin_each_line": MATRIX_VALUE,
+}
 
 # Files every matrix run starts with, next to main.geno.
 MATRIX_FILES = {

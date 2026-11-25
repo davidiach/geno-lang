@@ -42,6 +42,7 @@ from .json_shape import (
 )
 from .types import (
     BoolType,
+    BytesType,
     FloatType,
     IntType,
     ListType,
@@ -189,6 +190,8 @@ class ExternShapeBuilder:
             return ("float",)
         if isinstance(type_, StringType):
             return ("string",)
+        if isinstance(type_, BytesType):
+            return ("bytes",)
         if isinstance(type_, BoolType):
             return ("bool",)
         if isinstance(type_, UnitType):
@@ -218,7 +221,7 @@ class ExternShapeBuilder:
             return self._user_type(type_, where)
         raise self.fail(
             type_,
-            "an extern takes and returns Int, Float, String, Bool, Unit, List, "
+            "an extern takes and returns Int, Float, String, Bytes, Bool, Unit, List, "
             "tuples, Option, Map[String, V], JsonValue, and records/enums/unions "
             "built from them (or returns Result[T, String])",
             where,

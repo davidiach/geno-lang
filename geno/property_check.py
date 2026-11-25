@@ -64,6 +64,7 @@ from .sandbox import TimeoutError as SandboxTimeout
 from .types import (
     ArrayType,
     BoolType,
+    BytesType,
     FloatType,
     FuncType,
     IntType,
@@ -297,6 +298,7 @@ SampleKind = Literal[
     "float",
     "bool",
     "string",
+    "bytes",
     "unit",
     "tuple",
     "list",
@@ -327,7 +329,7 @@ class Sample:
 
     kind: SampleKind
     type_: Type
-    value: int | float | bool | str | None = None
+    value: int | float | bool | str | bytes | None = None
     name: str | None = None
     items: tuple[Sample, ...] = ()
 
@@ -345,6 +347,9 @@ def render(sample: Sample) -> str:
     if kind == "string":
         assert isinstance(sample.value, str)
         return _format_string_literal(sample.value)
+    if kind == "bytes":
+        assert isinstance(sample.value, bytes)
+        return f'result_unwrap(bytes_from_hex("{sample.value.hex()}"))'
     if kind == "unit":
         return "()"
     if kind == "tuple":
@@ -457,7 +462,9 @@ class Generators:
 
     def _shape_missing(self, type_: Type) -> Type | None:
         """The part of *type_*, outside its user types, with no generator."""
-        if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
+        if isinstance(
+            type_, (IntType, FloatType, BoolType, StringType, BytesType, UnitType)
+        ):
             return None
         if isinstance(type_, (ListType, SetType, VecType, ArrayType)):
             return self._shape_missing(type_.element_type)
@@ -592,7 +599,9 @@ class Generators:
         def inner(part: Type) -> float:
             return self._depth_with(part, depths, explore=explore)
 
-        if isinstance(type_, (IntType, FloatType, BoolType, StringType, UnitType)):
+        if isinstance(
+            type_, (IntType, FloatType, BoolType, StringType, BytesType, UnitType)
+        ):
             return 0
         if isinstance(type_, (ListType, SetType, VecType, ArrayType, MapType)):
             # The empty collection is a value whatever its elements are
@@ -641,6 +650,8 @@ class Generators:
             return Sample("bool", type_, rng.random() < 0.5)
         if isinstance(type_, StringType):
             return Sample("string", type_, _generate_string(rng, size))
+        if isinstance(type_, BytesType):
+            return Sample("bytes", type_, _generate_bytes(rng, size))
         if isinstance(type_, UnitType):
             return Sample("unit", type_)
         if isinstance(type_, TupleType):
@@ -762,6 +773,8 @@ class Generators:
             return Sample("bool", type_, False)
         if isinstance(type_, StringType):
             return Sample("string", type_, "")
+        if isinstance(type_, BytesType):
+            return Sample("bytes", type_, b"")
         if isinstance(type_, UnitType):
             return Sample("unit", type_)
         if isinstance(type_, TupleType):
@@ -814,6 +827,10 @@ class Generators:
             assert isinstance(sample.value, str)
             for text in _shrink_string(sample.value):
                 yield Sample("string", sample.type_, text)
+        elif kind == "bytes":
+            assert isinstance(sample.value, bytes)
+            for data in _shrink_bytes(sample.value):
+                yield Sample("bytes", sample.type_, data)
         elif kind in ("list", "set", "vec", "array", "map"):
             yield from self._shrink_collection(sample)
         elif kind in ("tuple", "entry"):
@@ -1005,6 +1022,34 @@ def _shrink_float(value: float) -> Iterator[float]:
         shown = render_float(candidate)
         if math.isfinite(candidate) and shown not in offered:
             offered.add(shown)
+            yield candidate
+
+
+def _generate_bytes(rng: random.Random, size: int) -> bytes:
+    if rng.random() < 0.15:
+        return rng.choice((b"", b"\x00", b"\xff", b"abc", b"\x00\x01\xfe\xff"))
+    length = rng.randint(0, min(size // 4, _MAX_STRING_LENGTH))
+    return bytes(rng.randrange(256) for _ in range(length))
+
+
+def _shrink_bytes(data: bytes) -> Iterator[bytes]:
+    """b"", either half, one byte fewer, a non-zero byte replaced with 0."""
+    if not data:
+        return
+    offered = {data}
+    candidates = [b""]
+    length = len(data)
+    if length > 1:
+        candidates.extend((data[length // 2 :], data[: length // 2]))
+    candidates.extend(data[:index] + data[index + 1 :] for index in range(length))
+    candidates.extend(
+        data[:index] + b"\x00" + data[index + 1 :]
+        for index in range(length)
+        if data[index] != 0
+    )
+    for candidate in candidates:
+        if candidate not in offered:
+            offered.add(candidate)
             yield candidate
 
 

@@ -86,6 +86,12 @@ class StringType(Type):
 
 
 @dataclass(frozen=True)
+class BytesType(Type):
+    def __str__(self) -> str:
+        return "Bytes"
+
+
+@dataclass(frozen=True)
 class UnitType(Type):
     def __str__(self) -> str:
         return "Unit"
@@ -142,6 +148,9 @@ class FuncType(Type):
     # with no way to run there (proposal 0025). Not part of the type's
     # identity: it only marks where a use must be rejected.
     unavailable: str | None = field(default=None, compare=False, repr=False)
+    # Streaming higher-order builtins (e.g. fs_each_line) invoke their callback
+    # immediately and propagate whatever effects the callback performs.
+    effect_polymorphic: bool = field(default=False, compare=False, repr=False)
 
     def __str__(self) -> str:
         params = ", ".join(str(t) for t in self.param_types)

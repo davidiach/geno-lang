@@ -186,10 +186,10 @@ def _trunc_int_div(a: int, b: int) -> int:
     return quotient
 
 
-def builtin_length(lst: list[Any] | str | ArrayValue) -> int:
-    if not isinstance(lst, (list, str, ArrayValue)):
+def builtin_length(lst: list[Any] | str | bytes | ArrayValue) -> int:
+    if not isinstance(lst, (list, str, bytes, ArrayValue)):
         raise RuntimeError(
-            f"length expects list, string, or array, got {type(lst).__name__}"
+            f"length expects list, string, bytes, or array, got {type(lst).__name__}"
         )
     return len(lst)
 
@@ -849,6 +849,8 @@ def _geno_sort_key(value: Any, _seen: set[int] | None = None) -> tuple[Any, ...]
         return (2, value)
     if isinstance(value, str):
         return (4, value)
+    if isinstance(value, bytes):
+        return (13, tuple(value))
     if isinstance(value, tuple):
         return (5, tuple(_geno_sort_key(item, _seen) for item in value))
     if isinstance(value, ConstructorValue):
@@ -982,6 +984,8 @@ def format_value(value: Any, _seen: set[int] | None = None) -> str:
         return repr(value)
     if isinstance(value, str):
         return _format_string_literal(value)
+    if isinstance(value, bytes):
+        return f"Bytes({value.hex()})"
     if value is None:
         return "()"
     if isinstance(value, bool):
@@ -1094,6 +1098,14 @@ def _write_display_value(
         append(quoted if len(head) == len(value) else quoted[:-1])
         if len(head) != len(value):
             raise _DisplayLimitReached
+    elif isinstance(value, bytes):
+        append("Bytes(")
+        head_bytes = value[: (writer.display_limit // 2) + 2]
+        append(head_bytes.hex())
+        if len(head_bytes) == len(value):
+            append(")")
+        else:
+            raise _DisplayLimitReached
     else:
         append(format_value(value))
 
@@ -1201,6 +1213,16 @@ def _write_stringify_value(
 
     if isinstance(value, str):
         writer.append(value if top_level else _format_string_literal(value))
+        return
+    if isinstance(value, bytes):
+        needed = writer.size + 7 + len(value) * 2
+        if needed > writer.limit:
+            raise RuntimeLimitError(
+                f"{writer.func_name}: String size exceeds limit "
+                f"({needed} > {writer.limit})",
+                limit="collection size",
+            )
+        writer.append(f"Bytes({value.hex()})")
         return
     if value is None:
         writer.append("()")
@@ -2832,7 +2854,7 @@ def _convert_geno_value_for_json(
         if limit is not None:
             _check_collection_size("Map", len(result), limit)
         return result
-    if isinstance(value, (ArrayValue, MutableMapValue, VecValue, SetValue)):
+    if isinstance(value, (ArrayValue, MutableMapValue, VecValue, SetValue, bytes)):
         return format_value(value)
     if isinstance(value, dict):
         if limit is not None:
@@ -4022,3 +4044,166 @@ def builtin_clamp(
     if not isinstance(max_val, (int, float)):
         raise RuntimeError("clamp: max must be a number")
     return max(min_val, min(max_val, value))
+
+
+# =============================================================================
+# Bytes Operations (always available, immutable binary data)
+# =============================================================================
+
+_HEX_RE = re.compile(r"^[0-9a-fA-F]*$")
+_BASE64_RE = re.compile(
+    r"^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+)
+
+
+def _require_bytes(func_name: str, value: Any) -> bytes:
+    if not isinstance(value, bytes):
+        raise RuntimeError(f"{func_name}: expected Bytes, got {type(value).__name__}")
+    return value
+
+
+def builtin_bytes_from_list(
+    xs: list[Any], *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> ConstructorValue:
+    """Construct Bytes from List[Int] where each element is in 0..255."""
+    _require_list("bytes_from_list", xs)
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("Bytes", len(xs), limit)
+    out = bytearray(len(xs))
+    for i, item in enumerate(xs):
+        if isinstance(item, bool) or not isinstance(item, int):
+            return ConstructorValue(
+                "Err", {"error": f"bytes_from_list: element {i} must be Int"}
+            )
+        if item < 0 or item > 255:
+            return ConstructorValue(
+                "Err",
+                {"error": (f"bytes_from_list: byte value {item} out of range 0..255")},
+            )
+        out[i] = item
+    return ConstructorValue("Ok", {"value": bytes(out)})
+
+
+def builtin_bytes_to_list(
+    data: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> list[int]:
+    """Convert Bytes into List[Int] of byte values 0..255."""
+    raw = _require_bytes("bytes_to_list", data)
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("List", len(raw), limit)
+    return list(raw)
+
+
+def builtin_bytes_from_utf8(
+    text: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> bytes:
+    """Encode a String as UTF-8 Bytes."""
+    if not isinstance(text, str):
+        raise RuntimeError("bytes_from_utf8: text must be a string")
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("Bytes", len(text), limit)
+    raw = text.encode("utf-8")
+    _check_collection_size("Bytes", len(raw), limit)
+    return raw
+
+
+def builtin_bytes_to_utf8(
+    data: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> ConstructorValue:
+    """Decode Bytes as strict UTF-8, returning Result[String, String]."""
+    raw = _require_bytes("bytes_to_utf8", data)
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        return ConstructorValue("Err", {"error": f"bytes_to_utf8: {exc}"})
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_result_string_size("bytes_to_utf8", len(text), limit)
+    return ConstructorValue("Ok", {"value": text})
+
+
+def builtin_bytes_from_hex(
+    text: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> ConstructorValue:
+    """Decode a hexadecimal string into Bytes."""
+    if not isinstance(text, str):
+        raise RuntimeError("bytes_from_hex: text must be a string")
+    if len(text) % 2 != 0:
+        return ConstructorValue(
+            "Err", {"error": "bytes_from_hex: hex string must have even length"}
+        )
+    if not _HEX_RE.fullmatch(text):
+        return ConstructorValue(
+            "Err", {"error": "bytes_from_hex: invalid hex character"}
+        )
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("Bytes", len(text) // 2, limit)
+    return ConstructorValue("Ok", {"value": bytes.fromhex(text)})
+
+
+def builtin_bytes_to_hex(
+    data: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> str:
+    """Encode Bytes as a lowercase hexadecimal string."""
+    raw = _require_bytes("bytes_to_hex", data)
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_result_string_size("bytes_to_hex", len(raw) * 2, limit)
+    return raw.hex()
+
+
+def builtin_bytes_from_base64(
+    text: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> ConstructorValue:
+    """Decode a strict standard RFC 4648 base64 string into Bytes."""
+    import base64 as _base64
+
+    if not isinstance(text, str):
+        raise RuntimeError("bytes_from_base64: text must be a string")
+    if not _BASE64_RE.fullmatch(text):
+        return ConstructorValue(
+            "Err", {"error": "bytes_from_base64: invalid base64 encoding"}
+        )
+    pad = 2 if text.endswith("==") else (1 if text.endswith("=") else 0)
+    out_len = (len(text) // 4) * 3 - pad
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("Bytes", out_len, limit)
+    raw = _base64.b64decode(text.encode("ascii"), validate=True)
+    return ConstructorValue("Ok", {"value": raw})
+
+
+def builtin_bytes_to_base64(
+    data: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> str:
+    """Encode Bytes as standard RFC 4648 base64."""
+    import base64 as _base64
+
+    raw = _require_bytes("bytes_to_base64", data)
+    limit = _effective_max_collection_size(max_collection_size)
+    out_len = ((len(raw) + 2) // 3) * 4
+    _check_result_string_size("bytes_to_base64", out_len, limit)
+    return _base64.b64encode(raw).decode("ascii")
+
+
+def builtin_bytes_length(data: Any) -> int:
+    """Return the number of bytes in Bytes."""
+    return len(_require_bytes("bytes_length", data))
+
+
+def builtin_bytes_slice(data: Any, start: Any, stop: Any) -> bytes:
+    """Return a clamped slice of Bytes."""
+    raw = _require_bytes("bytes_slice", data)
+    if isinstance(start, bool) or not isinstance(start, int):
+        raise RuntimeError("bytes_slice: start must be an integer")
+    if isinstance(stop, bool) or not isinstance(stop, int):
+        raise RuntimeError("bytes_slice: stop must be an integer")
+    return raw[start:stop]
+
+
+def builtin_bytes_concat(
+    left: Any, right: Any, *, max_collection_size: int = DEFAULT_MAX_COLLECTION_SIZE
+) -> bytes:
+    """Concatenate two Bytes values."""
+    lhs = _require_bytes("bytes_concat", left)
+    rhs = _require_bytes("bytes_concat", right)
+    limit = _effective_max_collection_size(max_collection_size)
+    _check_collection_size("Bytes", len(lhs) + len(rhs), limit)
+    return lhs + rhs
