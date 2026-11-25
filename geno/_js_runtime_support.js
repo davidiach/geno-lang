@@ -4847,6 +4847,11 @@ function _jsonValueToPrettyString(value, indent, depth) {
 // theirs. The walk mirrors _geno_json_from and _geno_json_to in the Python
 // runtime, message for message.
 
+// === Field Defaults ===
+// Defining type scope + constructor + field -> zero-arg default factory.
+const _GENO_FIELD_DEFAULTS = new _GENO_MAP();
+
+// === Typed JSON ===
 // Defining type scope and constructor name -> constructor function.
 const _GENO_JSON_CTORS = new _GENO_MAP([
     [".HttpResponse", HttpResponse],
@@ -4890,18 +4895,30 @@ function _genoJsonObject(node) {
 }
 const _MAX_JSON_DECODE_DEPTH = 320;
 
-function _genoJsonFields(entries, fields, types, path, visit, depth) {
+function _genoJsonFields(entries, fields, types, path, visit, depth, scope, constructor, rejectUnknown, isUnion) {
+    if (rejectUnknown) {
+        const known = new _GENO_SET(fields.map((field) => field[2]));
+        if (isUnion) known.add("type");
+        for (const key of entries.keys()) {
+            if (!known.has(key)) {
+                _genoJsonFail(path, "unknown field " + _GENO_JSON.stringify(key));
+            }
+        }
+    }
     const values = [];
-    for (const [name, shape] of fields) {
-        if (entries.has(name)) {
-            values.push(_genoJsonFrom(entries.get(name), shape, types,
-                [path, _genoJsonKey(name)], visit, depth));
+    for (const [genoName, shape, wireName, hasDefault] of fields) {
+        if (entries.has(wireName)) {
+            values.push(_genoJsonFrom(entries.get(wireName), shape, types,
+                [path, _genoJsonKey(wireName)], visit, depth));
+        } else if (hasDefault) {
+            visit(depth, true);
+            values.push(_GENO_FIELD_DEFAULTS.get(scope + "." + constructor + "." + genoName)());
         } else if (shape[0] === "option") {
             // An absent field is an absent value.
             visit(depth, true);
             values.push(None_);
         } else {
-            _genoJsonFail(path, "missing field " + _GENO_JSON.stringify(name));
+            _genoJsonFail(path, "missing field " + _GENO_JSON.stringify(wireName));
         }
     }
     return values;
@@ -4983,30 +5000,35 @@ function _genoJsonFrom(node, shape, types, path, visit, depth) {
     const described = types.get(shape[1]);
     if (described[0] === "enum") {
         if (tag !== "JsonString") _genoJsonExpected(path, "String", tag);
-        if (!described[1].includes(node.value)) {
-            _genoJsonFail(path, "expected " + _genoJsonOneOf(described[1])
-                + ", got " + _GENO_JSON.stringify(node.value));
+        for (const [constructor, wireTag] of described[1]) {
+            if (wireTag === node.value) {
+                return _GENO_JSON_CTORS.get(shape[2] + "." + constructor)();
+            }
         }
-        return _GENO_JSON_CTORS.get(shape[2] + "." + node.value)();
+        _genoJsonFail(path, "expected "
+            + _genoJsonOneOf(described[1].map((entry) => entry[1]))
+            + ", got " + _GENO_JSON.stringify(node.value));
     }
     if (tag !== "JsonObject") _genoJsonExpected(path, "object", tag);
     const entries = _genoJsonObject(node);
     if (described[0] === "record") {
         return _GENO_JSON_CTORS.get(shape[2] + "." + described[1])(
-            ..._genoJsonFields(entries, described[2], types, path, visit, depth));
+            ..._genoJsonFields(entries, described[2], types, path, visit, depth,
+                shape[2], described[1], described[3], false));
     }
     if (!entries.has("type")) _genoJsonFail(path, 'missing field "type"');
     const chosen = entries.get("type");
     const typePath = [path, ".type"];
     if (chosen._tag !== "JsonString") _genoJsonExpected(typePath, "String", chosen._tag);
-    for (const [constructor, fields] of described[1]) {
-        if (constructor === chosen.value) {
+    for (const [constructor, wireTag, fields] of described[1]) {
+        if (wireTag === chosen.value) {
             return _GENO_JSON_CTORS.get(shape[2] + "." + constructor)(
-                ..._genoJsonFields(entries, fields, types, path, visit, depth));
+                ..._genoJsonFields(entries, fields, types, path, visit, depth,
+                    shape[2], constructor, described[2], true));
         }
     }
     _genoJsonFail(typePath, "expected "
-        + _genoJsonOneOf(described[1].map((variant) => variant[0]))
+        + _genoJsonOneOf(described[1].map((variant) => variant[1]))
         + ", got " + _GENO_JSON.stringify(chosen.value));
 }
 function _genoJsonContainerDepth(depth) {
@@ -5117,27 +5139,31 @@ function _genoJsonTo(value, shape, types, depth, reserve) {
     }
     const described = types.get(shape[1]);
     if (described[0] === "enum") {
-        if (!described[1].includes(value._tag)) {
-            throw new Error("json_encode: value is not of its declared type");
+        for (const [constructor, wireTag] of described[1]) {
+            if (value._tag === constructor) {
+                reserve(_genoJsonTextSize(wireTag) + 2);
+                return JsonString(wireTag);
+            }
         }
-        reserve(_genoJsonTextSize(value._tag) + 2);
-        return JsonString(value._tag);
+        throw new Error("json_encode: value is not of its declared type");
     }
     depth = _genoJsonContainerDepth(depth);
-    const variants = described[0] === "record" ? [[described[1], described[2]]] : described[1];
-    for (const [constructor, fields] of variants) {
+    const variants = described[0] === "record"
+        ? [[described[1], "", described[2]]]
+        : described[1];
+    for (const [constructor, wireTag, fields] of variants) {
         if (value._tag !== constructor) continue;
         let entries;
         if (described[0] === "record") {
             reserve(2 + _GENO_MATH.max(0, fields.length - 1));
             entries = [];
         } else {
-            reserve(2 + fields.length + 7 + _genoJsonTextSize(constructor) + 2);
-            entries = [["type", JsonString(constructor)]];
+            reserve(2 + fields.length + 7 + _genoJsonTextSize(wireTag) + 2);
+            entries = [["type", JsonString(wireTag)]];
         }
-        for (const [name, fieldShape] of fields) {
-            reserve(_genoJsonTextSize(name) + 3);
-            entries.push([name, _genoJsonTo(value[name], fieldShape, types, depth, reserve)]);
+        for (const [genoName, fieldShape, wireName] of fields) {
+            reserve(_genoJsonTextSize(wireName) + 3);
+            entries.push([wireName, _genoJsonTo(value[genoName], fieldShape, types, depth, reserve)]);
         }
         return JsonObject(entries);
     }

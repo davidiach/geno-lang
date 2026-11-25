@@ -482,10 +482,17 @@ class ConstructorCall(Expression):
     # Field names for ``Point(x: 1, y: 2)`` (None per positional argument);
     # None when every argument is positional.
     argument_names: list[str | None] | None = None
-    # Set by the type checker for a call with named arguments: for each field
-    # in declaration order, the source index of its argument.  Arguments are
-    # evaluated in source order and then placed by this order.
+    # Set by the type checker for a call with named arguments or omitted
+    # defaulted fields: for each field in declaration order, the source index
+    # of its argument, or -1 when omitted and filled from the field's default.
     argument_order: list[int] | None = field(default=None, compare=False, repr=False)
+    # Set by the type checker: the defining type's constructor scope (e.g.
+    # ".Config" or "Models.Config") and field names in declaration order, used
+    # to look up field default factories.
+    _constructor_scope: str = field(default="", init=False, compare=False, repr=False)
+    _constructor_field_names: tuple[str, ...] = field(
+        default=(), init=False, compare=False, repr=False
+    )
 
     def accept(self, visitor: "ASTVisitor") -> Any:
         return visitor.visit_constructor_call(self)
@@ -1051,6 +1058,9 @@ class TypeVariant:
     name: str
     fields: list[tuple[str, TypeAnnotation]]  # (field_name, field_type)
     location: SourceLocation
+    field_defaults: dict[str, Expression] = field(default_factory=dict)
+    field_json_names: dict[str, str] = field(default_factory=dict)
+    json_name: str | None = None
 
 
 @dataclass
@@ -1064,6 +1074,8 @@ class TypeDef(Definition):
     type_params: list[str]
     variants: list[TypeVariant]
     exported: bool = False  # True when declared with `export type`
+    json_rename_all: str | None = None
+    json_unknown: str | None = None
     _json_constructor_scope: str = field(
         default="", init=False, repr=False, compare=False
     )

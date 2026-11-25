@@ -4038,6 +4038,8 @@ _GENO_JSON_CTORS: dict = {
     ("", "FileKindOther"): FileKindOther,
     ("", "FileMetadata"): FileMetadata,
 }
+# (Defining type scope, constructor name, field name) -> zero-arg default factory.
+_GENO_FIELD_DEFAULTS: dict = {}
 _GENO_JSON_KINDS = {
     "JsonString": "String",
     "JsonInt": "Int",
@@ -4094,6 +4096,9 @@ class _GenoJsonOps:
 
     def make(self, scope: Any, constructor: Any, fields: Any, values: Any) -> Any:
         return _GENO_JSON_CTORS[scope, constructor](*values)
+
+    def default_value(self, scope: Any, constructor: Any, field_name: Any) -> Any:
+        return _GENO_FIELD_DEFAULTS[scope, constructor, field_name]()
 
     def is_variant(self, value: Any, constructor: Any, scope: Any = "") -> Any:
         if constructor == "None":
@@ -4190,27 +4195,41 @@ def _geno_json_fields(
     ops: Any,
     visit: Any,
     depth: int,
+    scope: Any,
+    constructor: Any,
+    reject_unknown: bool,
+    is_union: bool,
 ) -> Any:
+    if reject_unknown:
+        known = {field[2] for field in fields}
+        if is_union:
+            known.add("type")
+        for key in entries:
+            if key not in known:
+                _geno_json_fail(path, "unknown field " + _geno_json_quote(key))
     values = []
-    for name, shape in fields:
-        if name in entries:
+    for geno_name, shape, wire_name, has_default in fields:
+        if wire_name in entries:
             values.append(
                 _geno_json_from(
-                    entries[name],
+                    entries[wire_name],
                     shape,
                     types,
-                    (path, _geno_json_key(name)),
+                    (path, _geno_json_key(wire_name)),
                     ops,
                     visit,
                     depth,
                 )
             )
+        elif has_default:
+            visit(depth, True)
+            values.append(ops.default_value(scope, constructor, geno_name))
         elif shape[0] == "option":
             # An absent field is an absent value.
             visit(depth, True)
             values.append(ops.none())
         else:
-            _geno_json_fail(path, "missing field " + _geno_json_quote(name))
+            _geno_json_fail(path, "missing field " + _geno_json_quote(wire_name))
     return values
 
 
@@ -4340,15 +4359,16 @@ def _geno_json_from(
         if tag != "JsonString":
             _geno_json_expected(path, "String", tag)
         name = ops.get(node, "value")
-        if name not in described[1]:
-            _geno_json_fail(
-                path,
-                "expected "
-                + _geno_json_one_of(described[1])
-                + ", got "
-                + _geno_json_quote(name),
-            )
-        return ops.make(shape[2], name, (), [])
+        for constructor, wire_tag in described[1]:
+            if wire_tag == name:
+                return ops.make(shape[2], constructor, (), [])
+        _geno_json_fail(
+            path,
+            "expected "
+            + _geno_json_one_of([wire_tag for _, wire_tag in described[1]])
+            + ", got "
+            + _geno_json_quote(name),
+        )
     if tag != "JsonObject":
         _geno_json_expected(path, "object", tag)
     entries = _geno_json_object(node, ops)
@@ -4357,7 +4377,19 @@ def _geno_json_from(
             shape[2],
             described[1],
             described[2],
-            _geno_json_fields(entries, described[2], types, path, ops, visit, depth),
+            _geno_json_fields(
+                entries,
+                described[2],
+                types,
+                path,
+                ops,
+                visit,
+                depth,
+                shape[2],
+                described[1],
+                described[3],
+                False,
+            ),
         )
     if "type" not in entries:
         _geno_json_fail(path, 'missing field "type"')
@@ -4366,18 +4398,30 @@ def _geno_json_from(
     if ops.tag(chosen) != "JsonString":
         _geno_json_expected(type_path, "String", ops.tag(chosen))
     name = ops.get(chosen, "value")
-    for constructor, fields in described[1]:
-        if constructor == name:
+    for constructor, wire_tag, fields in described[1]:
+        if wire_tag == name:
             return ops.make(
                 shape[2],
                 constructor,
                 fields,
-                _geno_json_fields(entries, fields, types, path, ops, visit, depth),
+                _geno_json_fields(
+                    entries,
+                    fields,
+                    types,
+                    path,
+                    ops,
+                    visit,
+                    depth,
+                    shape[2],
+                    constructor,
+                    described[2],
+                    True,
+                ),
             )
     _geno_json_fail(
         type_path,
         "expected "
-        + _geno_json_one_of([constructor for constructor, _ in described[1]])
+        + _geno_json_one_of([wire_tag for _, wire_tag, _ in described[1]])
         + ", got "
         + _geno_json_quote(name),
     )
@@ -4507,33 +4551,38 @@ def _geno_json_to(
         return ops.node("JsonObject", [("err", inner)])
     described = types[shape[1]]
     if described[0] == "enum":
-        for constructor in described[1]:
+        for constructor, wire_tag in described[1]:
             if ops.is_variant(value, constructor, shape[2]):
-                reserve(len(constructor) + 2)
-                return ops.node("JsonString", constructor)
+                reserve(len(wire_tag) + 2)
+                return ops.node("JsonString", wire_tag)
         raise RuntimeError("json_encode: value is not of its declared type")
     depth = _geno_json_container_depth(depth)
     if described[0] == "record":
-        variants = ((described[1], described[2]),)
+        variants = ((described[1], "", described[2]),)
         entries: Any = []
     else:
         variants = described[1]
         entries = None
-    for constructor, fields in variants:
+    for constructor, wire_tag, fields in variants:
         if not ops.is_variant(value, constructor, shape[2]):
             continue
         if entries is None:
-            reserve(2 + len(fields) + 7 + len(constructor) + 2)
-            entries = [("type", ops.node("JsonString", constructor))]
+            reserve(2 + len(fields) + 7 + len(wire_tag) + 2)
+            entries = [("type", ops.node("JsonString", wire_tag))]
         else:
             reserve(2 + max(0, len(fields) - 1))
-        for name, field_shape in fields:
-            reserve(len(name) + 3)
+        for geno_name, field_shape, wire_name, _has_default in fields:
+            reserve(len(wire_name) + 3)
             entries.append(
                 (
-                    name,
+                    wire_name,
                     _geno_json_to(
-                        ops.get(value, name), field_shape, types, depth, ops, reserve
+                        ops.get(value, geno_name),
+                        field_shape,
+                        types,
+                        depth,
+                        ops,
+                        reserve,
                     ),
                 )
             )

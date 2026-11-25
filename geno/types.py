@@ -7,7 +7,7 @@ Type representations used by the type checker.
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .tokens import SourceLocation
 
@@ -461,3 +461,8 @@ class TypeDefInfo:
     variants: dict[str, list[tuple[str, Type]]]  # variant_name -> [(field_name, type)]
     invariant_params: frozenset[int] = field(default_factory=frozenset)
     json_constructor_scope: str = ""
+    json_rename_all: str | None = None
+    json_unknown: str = "ignore"
+    variant_json_names: dict[str, str] = field(default_factory=dict)
+    field_json_names: dict[tuple[str, str], str] = field(default_factory=dict)
+    field_defaults: dict[tuple[str, str], Any] = field(default_factory=dict)

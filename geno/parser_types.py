@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import NoReturn
 
 from .ast_nodes import (
+    Expression,
     FunctionType,
     SimpleType,
     TypeAlias,
@@ -101,6 +102,7 @@ class TypeParserMixin(ParserBase):
         if self._check(TokenType.LBRACE):
             self._reject_record_braces(name)
 
+        # An `@json(name: ...)` attribute on the RHS always starts a variant.
         # Otherwise: algebraic data type with variants
         variants = [self._parse_type_variant()]
         while self._match(TokenType.BAR):
@@ -193,30 +195,71 @@ class TypeParserMixin(ParserBase):
             (Fix(f"Write {name}(...)", tuple(edits)),),
         )
 
+    def _parse_json_name_annotation(self, target_kind: str) -> str:
+        """Parse ``@json(name: "...")`` on a variant or record field."""
+        self._expect(TokenType.AT)
+        attr = self._expect(TokenType.IDENTIFIER, "Expected annotation name after '@'")
+        if attr.value != "json":
+            raise self._error(
+                f"Unknown annotation '@{attr.value}' on {target_kind}, expected '@json'"
+            )
+        self._expect(TokenType.LPAREN, "Expected '(' after '@json'")
+        key = self._expect(
+            TokenType.IDENTIFIER,
+            f"Expected 'name' option in @json(...) on {target_kind}",
+        )
+        if key.value != "name":
+            raise self._error(
+                f"Unknown @json option '{key.value}' on {target_kind}; expected 'name'"
+            )
+        self._expect(TokenType.COLON, "Expected ':' after 'name' in @json(...)")
+        val = self._expect(
+            TokenType.STRING, "Expected string value for @json(name: ...)"
+        )
+        if not val.value:
+            raise self._error("@json(name: ...) must not be empty")
+        self._match(TokenType.COMMA)
+        self._expect(TokenType.RPAREN, "Expected ')' after @json(name: ...)")
+        return str(val.value)
+
     def _parse_type_variant(self) -> TypeVariant:
-        """Parse a type variant: Name or Name(field: Type, ...)"""
+        """Parse a type variant: [@json(name: "...")] Name[(field: Type [= default], ...)]"""
         location = self._current().location
+        variant_json_name: str | None = None
+        if self._check(TokenType.AT):
+            variant_json_name = self._parse_json_name_annotation("variant")
         name_token = self._expect(TokenType.TYPE_IDENTIFIER, "Expected variant name")
         name = name_token.value
 
         fields: list[tuple[str, TypeAnnotation]] = []
+        field_defaults: dict[str, Expression] = {}
+        field_json_names: dict[str, str] = {}
         if self._match(TokenType.LPAREN):
-            if not self._check(TokenType.RPAREN):
-                # Parse first field
+            while not self._check(TokenType.RPAREN):
+                field_json_name: str | None = None
+                if self._check(TokenType.AT):
+                    field_json_name = self._parse_json_name_annotation("field")
                 field_name = self._expect(TokenType.IDENTIFIER).value
                 self._expect(TokenType.COLON)
                 field_type = self._parse_type()
                 fields.append((field_name, field_type))
-
-                while self._match(TokenType.COMMA):
-                    field_name = self._expect(TokenType.IDENTIFIER).value
-                    self._expect(TokenType.COLON)
-                    field_type = self._parse_type()
-                    fields.append((field_name, field_type))
+                if field_json_name is not None:
+                    field_json_names[field_name] = field_json_name
+                if self._match(TokenType.ASSIGN):
+                    field_defaults[field_name] = self._parse_expression()
+                if not self._match(TokenType.COMMA):
+                    break
 
             self._expect(TokenType.RPAREN)
 
-        return TypeVariant(name=name, fields=fields, location=location)
+        return TypeVariant(
+            name=name,
+            fields=fields,
+            location=location,
+            field_defaults=field_defaults,
+            field_json_names=field_json_names,
+            json_name=variant_json_name,
+        )
 
     def _parse_type(self) -> TypeAnnotation:
         """Parse a type annotation."""

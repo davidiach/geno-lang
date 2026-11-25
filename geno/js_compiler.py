@@ -1817,12 +1817,27 @@ class JSCompiler(BaseCompiler):
         }
         for variant in defn.variants:
             self._compile_variant(variant, formatter_names[variant.name])
+        scope = defn._json_constructor_scope or f".{defn.name}"
         if self._registers_json_constructors:
-            scope = defn._json_constructor_scope
             for variant in defn.variants:
                 self._writeln(
                     f"_GENO_JSON_CTORS.set({_json.dumps(scope + '.' + variant.name)}, "
                     f"{self._mangle_name(variant.name)});"
+                )
+        for variant in defn.variants:
+            if not variant.field_defaults:
+                continue
+            field_types = dict(variant.fields)
+            for field_name, default_expr in variant.field_defaults.items():
+                helper = self._fresh_temp()
+                compiled_default = self._compile_expr(default_expr)
+                if self._needs_deep_copy(default_expr, field_types[field_name]):
+                    compiled_default = f"_deepCopy({compiled_default})"
+                self._writeln(f"function {helper}() {{ return {compiled_default}; }}")
+                self._writeln(
+                    f"_GENO_FIELD_DEFAULTS.set("
+                    f"{_json.dumps(scope + '.' + variant.name + '.' + field_name)}, "
+                    f"{helper});"
                 )
         for variant in defn.variants:
             self._compile_variant_formatter(
@@ -4584,12 +4599,22 @@ class JSCompiler(BaseCompiler):
         finally:
             self.indent_level = initial_indent
 
+    def _compile_field_default_call(
+        self, scope: str, constructor: str, field_name: str
+    ) -> str:
+        return (
+            f"_GENO_FIELD_DEFAULTS.get("
+            f"{_json.dumps(scope + '.' + constructor + '.' + field_name)})()"
+        )
+
     def _compile_constructor_call(self, expr: ConstructorCall) -> str:
         if expr.constructor == "None":
             return "None_"
         reordered = self._compile_named_constructor_call(expr)
         if reordered is not None:
             names, values, call = reordered
+            if not names:
+                return call
             return f"(({', '.join(names)}) => {call})({', '.join(values)})"
         args = ", ".join(self._compile_expr(arg) for arg in expr.arguments)
         return f"{self._mangle_name(expr.constructor)}({args})"

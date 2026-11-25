@@ -1,0 +1,24 @@
+// Typed JSON attributes (@json) and default record field values across all backends.
+
+@json(rename_all: "camelCase", unknown: "reject")
+type ApiEvent = ApiEvent(
+    event_id: Int,
+    @json(name: "created-at") created_at: String,
+    @json(name: "type") kind: String,
+    retry_count: Int = 3,
+    note: Option[String] = Some("default")
+)
+
+@json(rename_all: "snake_case")
+type Status = InProgress | @json(name: "done") Complete
+
+func main() -> Unit with io
+    let ev = ApiEvent(event_id: 1, created_at: "2026-01-01", kind: "deploy")
+    let raw = json_encode(ev)
+    print(raw)
+    print(json_decode[ApiEvent](raw) == Ok(ev))
+    print(json_decode[ApiEvent]("{\"eventId\": 1, \"created-at\": \"2026-01-01\", \"type\": \"deploy\"}") == Ok(ev))
+    print(json_decode[ApiEvent]("{\"eventId\": 1, \"created-at\": \"2026-01-01\", \"type\": \"deploy\", \"extra\": 1}"))
+    print(json_encode(InProgress))
+    print(json_decode[Status]("\"done\"") == Ok(Complete))
+end func

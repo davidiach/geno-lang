@@ -108,7 +108,7 @@ from .exhaustiveness import ExhaustivenessMixin
 from .extern import ExternCodec, ExternShapeBuilder, ExternTypeError
 from .float_promotion import float_shape, promotion_shape
 from .format_spec import FormatSpecError, parse_format_spec, value_kind
-from .json_shape import JsonTypeError, build_codec
+from .json_shape import JsonTypeError, build_codec, validate_type_json_mapping
 from .mutation_ownership import function_owned_names, lambda_owned_names
 from .parser_patterns import pattern_bound_names
 from .stdlib_scope import binds_unqualified
@@ -1834,7 +1834,8 @@ class TypeChecker(ExhaustivenessMixin):
             if isinstance(defn, TestBlock):
                 self._collect_tested_names(defn.body)
 
-        # Third pass: type-check function bodies before final effect validation.
+        # Third pass: check type field defaults and function bodies before final effect validation.
+        self._check_type_def_defaults(program, validate_effects=False)
         for defn in program.definitions:
             if isinstance(defn, FunctionDef):
                 self._check_function_def(
@@ -1854,6 +1855,7 @@ class TypeChecker(ExhaustivenessMixin):
             self._stabilize_function_effects(program)
             self.effects_settled = True
 
+            self._check_type_def_defaults(program, validate_effects=True)
             for defn in program.definitions:
                 if isinstance(defn, FunctionDef):
                     self._check_function_def(defn)
@@ -2420,10 +2422,15 @@ class TypeChecker(ExhaustivenessMixin):
     def _build_type_def_info(self, defn: TypeDef) -> TypeDefInfo:
         """Build resolved type information for a type definition."""
         variants: dict[str, list[tuple[str, Type]]] = {}
+        variant_json_names: dict[str, str] = {}
+        field_json_names: dict[tuple[str, str], str] = {}
+        field_defaults: dict[tuple[str, str], Expression] = {}
 
         for variant in defn.variants:
             fields: list[tuple[str, Type]] = []
             seen_fields: set[str] = set()
+            if variant.json_name is not None:
+                variant_json_names[variant.name] = variant.json_name
             for field_name, field_type_annot in variant.fields:
                 if field_name in seen_fields:
                     self._error(
@@ -2435,14 +2442,169 @@ class TypeChecker(ExhaustivenessMixin):
                 seen_fields.add(field_name)
                 field_type = self._resolve_type(field_type_annot, defn.type_params)
                 fields.append((field_name, field_type))
+                if field_name in variant.field_json_names:
+                    field_json_names[(variant.name, field_name)] = (
+                        variant.field_json_names[field_name]
+                    )
+                if field_name in variant.field_defaults:
+                    field_defaults[(variant.name, field_name)] = variant.field_defaults[
+                        field_name
+                    ]
             variants[variant.name] = fields
 
-        return TypeDefInfo(
+        info = TypeDefInfo(
             name=defn.name,
             type_params=defn.type_params,
             variants=variants,
             json_constructor_scope=defn._json_constructor_scope,
+            json_rename_all=defn.json_rename_all,
+            json_unknown=defn.json_unknown or "ignore",
+            variant_json_names=variant_json_names,
+            field_json_names=field_json_names,
+            field_defaults=field_defaults,
         )
+        mapping_error = validate_type_json_mapping(info)
+        if mapping_error is not None:
+            self._error(
+                f"Invalid @json mapping on type '{defn.name}': {mapping_error}",
+                defn.location,
+                ErrorCode.TYPE_JSON_FORM,
+            )
+        return info
+
+    def _check_type_def_defaults(
+        self, program: Program, *, validate_effects: bool
+    ) -> None:
+        """Typecheck default field expressions on type definitions."""
+        prev_async = self._in_async_function
+        prev_main = self._in_main_function
+        prev_ret = self.current_return_type
+        self._in_async_function = False
+        self._in_main_function = False
+        self.current_return_type = None
+        try:
+            for defn in program.definitions:
+                if not isinstance(defn, TypeDef):
+                    continue
+                type_info = self.type_defs.get(defn.name)
+                if type_info is None:
+                    continue
+                rigid_subs: dict[str, Type] = {
+                    tp: TypeParam(tp) for tp in defn.type_params
+                }
+                for variant in defn.variants:
+                    if not variant.field_defaults:
+                        continue
+                    field_types = dict(type_info.variants.get(variant.name, ()))
+                    for field_name, default_expr in variant.field_defaults.items():
+                        field_type = field_types.get(field_name)
+                        if field_type is None:
+                            continue
+                        expected_field_type = (
+                            self._substitute_type_vars(field_type, rigid_subs)
+                            if rigid_subs
+                            else field_type
+                        )
+                        if not validate_effects:
+                            self._prime_lambda(default_expr, expected_field_type)
+                            actual = self._check_expression(
+                                default_expr, self.global_env
+                            )
+                            if not self._types_strictly_compatible(
+                                expected_field_type, actual
+                            ):
+                                self._error(
+                                    f"Default value for field '{field_name}' of "
+                                    f"{variant.name} has type {actual}, expected "
+                                    f"{field_type}",
+                                    default_expr.location,
+                                )
+                            self._record_expected_runtime_type(default_expr, field_type)
+                        else:
+                            effects = self._infer_expr_effects(
+                                default_expr, self.global_env
+                            )
+                            if effects:
+                                self._error(
+                                    f"Default value for field '{field_name}' of "
+                                    f"{variant.name} must be pure "
+                                    f"(performs effects: {', '.join(sorted(effects))})",
+                                    default_expr.location,
+                                    ErrorCode.EFFECT_VIOLATION,
+                                )
+            if not validate_effects:
+                self._check_cyclic_field_defaults(program)
+        finally:
+            self._in_async_function = prev_async
+            self._in_main_function = prev_main
+            self.current_return_type = prev_ret
+
+    def _check_cyclic_field_defaults(self, program: Program) -> None:
+        """Reject cyclic constructor field defaults (e.g. ``A(a: A = A())``)."""
+        edges: dict[tuple[str, str], set[tuple[str, str]]] = {}
+        locations: dict[tuple[str, str], SourceLocation] = {}
+        for defn in program.definitions:
+            if not isinstance(defn, TypeDef):
+                continue
+            for variant in defn.variants:
+                for field_name, default_expr in variant.field_defaults.items():
+                    key = (variant.name, field_name)
+                    locations[key] = default_expr.location
+                    deps: set[tuple[str, str]] = set()
+                    stack: list[object] = [default_expr]
+                    while stack:
+                        node = stack.pop()
+                        if isinstance(node, (list, tuple)):
+                            stack.extend(node)
+                        elif isinstance(node, ConstructorCall):
+                            callee_type = self._constructor_to_type.get(
+                                node.constructor
+                            )
+                            if callee_type is not None and node.argument_order:
+                                callee_fields = self.type_defs[callee_type].variants[
+                                    node.constructor
+                                ]
+                                for (cf_name, _), idx in zip(
+                                    callee_fields, node.argument_order
+                                ):
+                                    if idx == -1:
+                                        deps.add((node.constructor, cf_name))
+                            stack.extend(node.arguments)
+                        elif dataclasses.is_dataclass(node) and not isinstance(
+                            node, type
+                        ):
+                            stack.extend(
+                                getattr(node, item.name)
+                                for item in dataclasses.fields(node)
+                                if not item.name.startswith("_")
+                                and item.name != "location"
+                            )
+                    edges[key] = deps
+
+        visited: set[tuple[str, str]] = set()
+        visiting: set[tuple[str, str]] = set()
+
+        def dfs(node: tuple[str, str]) -> bool:
+            if node in visiting:
+                return True
+            if node in visited:
+                return False
+            visiting.add(node)
+            for nxt in edges.get(node, ()):
+                if dfs(nxt):
+                    return True
+            visiting.remove(node)
+            visited.add(node)
+            return False
+
+        for key in edges:
+            visiting.clear()
+            if dfs(key):
+                ctor, fname = key
+                self._error(
+                    f"Default value for field '{fname}' of {ctor} depends cyclically on itself",
+                    locations[key],
+                )
 
     def _refresh_type_def_variance(self, type_defs: dict[str, TypeDefInfo]) -> None:
         """Recompute variance until nested user-type relationships stabilize."""
@@ -4984,12 +5146,17 @@ class TypeChecker(ExhaustivenessMixin):
                 substitutions = dict(zip(type_info.type_params, expected.type_args))
                 if expr.argument_names is not None and expr.argument_order is None:
                     return
-                field_arguments = (
-                    expr.arguments
+                field_arguments: list[Expression | None] = (
+                    list(expr.arguments)
                     if expr.argument_order is None
-                    else [expr.arguments[index] for index in expr.argument_order]
+                    else [
+                        None if index == -1 else expr.arguments[index]
+                        for index in expr.argument_order
+                    ]
                 )
                 for argument, (_name, field_type) in zip(field_arguments, fields):
+                    if argument is None:
+                        continue
                     self._record_expected_runtime_type(
                         argument,
                         self._apply_substitutions(field_type, substitutions),
@@ -7379,14 +7546,26 @@ class TypeChecker(ExhaustivenessMixin):
         if type_name is not None:
             type_info = self.type_defs[type_name]
             fields = type_info.variants[expr.constructor]
+            expr._constructor_scope = type_info.json_constructor_scope
+            expr._constructor_field_names = tuple(
+                field_name for field_name, _ in fields
+            )
+            default_fields = {
+                fname
+                for cname, fname in type_info.field_defaults
+                if cname == expr.constructor
+            }
 
-            arguments = expr.arguments
-            if expr.argument_names is not None:
+            order: list[int] | None = None
+            if expr.argument_names is not None or default_fields:
                 try:
                     order = constructor_argument_order(
                         expr.constructor,
-                        expr.argument_names,
+                        expr.argument_names
+                        if expr.argument_names is not None
+                        else [None] * len(expr.arguments),
                         [field_name for field_name, _ in fields],
+                        default_fields=default_fields,
                     )
                 except ValueError as exc:
                     self._error(str(exc), expr.location, ErrorCode.TYPE_WRONG_ARITY)
@@ -7394,11 +7573,9 @@ class TypeChecker(ExhaustivenessMixin):
                         self._check_expression(arg, env)
                     return AnyType()
                 expr.argument_order = order
-                arguments = [expr.arguments[index] for index in order]
-
-            if len(arguments) != len(fields):
+            elif len(expr.arguments) != len(fields):
                 self._error(
-                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(arguments)}",
+                    f"Constructor {expr.constructor} expects {len(fields)} arguments, got {len(expr.arguments)}",
                     expr.location,
                     ErrorCode.TYPE_WRONG_ARITY,
                 )
@@ -7406,13 +7583,47 @@ class TypeChecker(ExhaustivenessMixin):
             # Infer type parameters from arguments
             type_param_bindings: dict[str, Type] = {}
             has_never_arg = False
-            for i, (arg, (_field_name, field_type)) in enumerate(
-                zip(arguments, fields)
-            ):
+            field_slots: list[tuple[int, str, Type, Expression | None]] = []
+            if order is not None:
+                for i, (arg_idx, (field_name, field_type)) in enumerate(
+                    zip(order, fields)
+                ):
+                    field_slots.append(
+                        (
+                            i,
+                            field_name,
+                            field_type,
+                            None if arg_idx == -1 else expr.arguments[arg_idx],
+                        )
+                    )
+            else:
+                for i, (arg, (field_name, field_type)) in enumerate(
+                    zip(expr.arguments, fields)
+                ):
+                    field_slots.append((i, field_name, field_type, arg))
+
+            for i, field_name, field_type, field_arg in field_slots:
+                if field_arg is None:
+                    default_expr = type_info.field_defaults.get(
+                        (expr.constructor, field_name)
+                    )
+                    default_type = (
+                        getattr(default_expr, "_resolved_type", None)
+                        if default_expr is not None
+                        else None
+                    )
+                    if isinstance(default_type, Type) and self._has_type_vars(
+                        field_type
+                    ):
+                        self._types_compatible_with_subs(
+                            field_type, default_type, type_param_bindings
+                        )
+                    continue
                 self._prime_lambda(
-                    arg, self._apply_substitutions(field_type, type_param_bindings)
+                    field_arg,
+                    self._apply_substitutions(field_type, type_param_bindings),
                 )
-                arg_type = self._check_expression(arg, env)
+                arg_type = self._check_expression(field_arg, env)
                 has_never_arg = has_never_arg or isinstance(arg_type, NeverType)
                 if self._has_type_vars(arg_type):
                     # Rename the argument's own type variables so they cannot
@@ -7438,16 +7649,16 @@ class TypeChecker(ExhaustivenessMixin):
                         self._error(
                             f"Constructor argument {i + 1} type mismatch: "
                             f"expected {expected_type}, got {arg_type}",
-                            arg.location,
+                            field_arg.location,
                         )
                 elif not self._types_strictly_compatible(field_type, arg_type):
                     self._error(
                         f"Constructor argument {i + 1} type mismatch: "
                         f"expected {field_type}, got {arg_type}",
-                        arg.location,
+                        field_arg.location,
                     )
                 self._record_expected_runtime_type(
-                    arg,
+                    field_arg,
                     self._apply_substitutions(field_type, type_param_bindings),
                 )
 
