@@ -3284,7 +3284,7 @@ function bytes_to_utf8(data) {
     const raw = _requireBytes("bytes_to_utf8", data);
     let text;
     try {
-        text = new globalThis.TextDecoder("utf-8", { fatal: true }).decode(raw);
+        text = new globalThis.TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(raw);
     } catch (e) {
         return Err("bytes_to_utf8: " + (e && e.message ? e.message : _GENO_STRING(e)));
     }
@@ -3488,9 +3488,10 @@ function fs_each_line(path, callback) {
     } catch (e) {
         return { _tag: "Err", error: e.message };
     }
-    const decoder = new globalThis.TextDecoder("utf-8", { fatal: true });
+    const decoder = new globalThis.TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
     const buf = new globalThis.Uint8Array(8192);
     let pending = "";
+    let skipLeadingLf = false;
     try {
         while (true) {
             let bytesRead;
@@ -3507,13 +3508,44 @@ function fs_each_line(path, callback) {
             } catch (e) {
                 return { _tag: "Err", error: e.message };
             }
+            if (skipLeadingLf && decoded.length > 0) {
+                if (decoded[0] === "\n") {
+                    decoded = decoded.slice(1);
+                }
+                skipLeadingLf = false;
+            }
             pending += decoded;
-            while (true) {
-                const nl = pending.indexOf("\n");
-                if (nl === -1) break;
-                let line = pending.slice(0, nl);
-                pending = pending.slice(nl + 1);
-                if (line.endsWith("\r")) line = line.slice(0, -1);
+            let idx = 0;
+            while (idx < pending.length) {
+                const nl = pending.indexOf("\n", idx);
+                const cr = pending.indexOf("\r", idx);
+                let sep = -1;
+                if (nl !== -1 && (cr === -1 || nl < cr)) {
+                    sep = nl;
+                } else if (cr !== -1) {
+                    if (cr === pending.length - 1 && bytesRead !== 0) {
+                        const line = pending.slice(idx, cr);
+                        _checkCollectionKind("String", _stringLength(line));
+                        const outcome = callback(line);
+                        if (isConstructor(outcome) && outcome._tag === "Ok") {
+                            if (outcome.value === false) return Ok(null);
+                        } else if (isConstructor(outcome) && outcome._tag === "Err") {
+                            return outcome;
+                        } else {
+                            throw new Error("fs_each_line: callback must return Result[Bool, String]");
+                        }
+                        idx = cr + 1;
+                        skipLeadingLf = true;
+                        break;
+                    }
+                    sep = cr;
+                } else {
+                    break;
+                }
+                const line = pending.slice(idx, sep);
+                idx = (pending[sep] === "\r" && sep + 1 < pending.length && pending[sep + 1] === "\n")
+                    ? sep + 2
+                    : sep + 1;
                 _checkCollectionKind("String", _stringLength(line));
                 const outcome = callback(line);
                 if (isConstructor(outcome) && outcome._tag === "Ok") {
@@ -3524,12 +3556,11 @@ function fs_each_line(path, callback) {
                     throw new Error("fs_each_line: callback must return Result[Bool, String]");
                 }
             }
+            pending = pending.slice(idx);
             if (bytesRead === 0) {
                 if (pending.length > 0) {
-                    let line = pending;
-                    if (line.endsWith("\r")) line = line.slice(0, -1);
-                    _checkCollectionKind("String", _stringLength(line));
-                    const outcome = callback(line);
+                    _checkCollectionKind("String", _stringLength(pending));
+                    const outcome = callback(pending);
                     if (isConstructor(outcome) && outcome._tag === "Ok") {
                         return Ok(null);
                     } else if (isConstructor(outcome) && outcome._tag === "Err") {
@@ -3540,10 +3571,7 @@ function fs_each_line(path, callback) {
                 }
                 break;
             }
-            const pendingLineLen = pending.endsWith("\r")
-                ? _stringLength(pending.slice(0, -1))
-                : _stringLength(pending);
-            _checkCollectionKind("String", pendingLineLen);
+            _checkCollectionKind("String", _stringLength(pending));
         }
     } finally {
         try { fs.closeSync(fd); } catch (_ignored) {}

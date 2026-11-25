@@ -942,3 +942,61 @@ end func
     )
     assert not res.ok
     assert any("fs" in str(diag).lower() for diag in res.diagnostics)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["interpreter", "python", pytest.param("js", marks=needs_node)],
+)
+def test_bytes_to_utf8_preserves_bom_across_backends(
+    backend: str, tmp_path: Path
+) -> None:
+    source = """
+func main() -> Unit with io
+    let raw = result_unwrap(bytes_from_hex("efbbbf61"))
+    let text = result_unwrap(bytes_to_utf8(raw))
+    print(bytes_to_hex(bytes_from_utf8(text)))
+    print(to_string(length(text)))
+end func
+"""
+    rc, out, err = _run_with_caps(source, backend, tmp_path, caps={"print"})
+    assert rc == 0, err
+    assert out.splitlines() == ["efbbbf61", "2"]
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["interpreter", "python", pytest.param("js", marks=needs_node)],
+)
+def test_fs_each_line_universal_newlines_and_chunk_boundary_crlf(
+    backend: str, tmp_path: Path
+) -> None:
+    # Mix BOM, lone CR, CRLF split right across the 8192-byte JS buffer boundary
+    # (3 + 13 + 8175 = 8191, so '\r' is byte 8191 and '\n' is byte 8192), and
+    # lone CR right at the 16384-byte boundary.
+    sample = tmp_path / "newlines.txt"
+    chunk1_line = "a" * 8175
+    chunk2_line = "b" * 8190
+    sample.write_bytes(
+        b"\xef\xbb\xbf"
+        + b"first\rsecond\r"
+        + chunk1_line.encode("utf-8")
+        + b"\r\n"
+        + chunk2_line.encode("utf-8")
+        + b"\rlast\r"
+    )
+    path_literal = str(sample).replace("\\", "\\\\")
+    source = f"""
+func main() -> Unit with fs, io, mutation
+    let lengths: Vec[Int] = vec_new()
+    let r = fs_each_line("{path_literal}", fn(line: String) do
+        vec_push(lengths, length(line))
+        return Ok(true)
+    end fn)
+    print(result_is_ok(r))
+    print(vec_to_list(lengths))
+end func
+"""
+    rc, out, err = _run_with_caps(source, backend, tmp_path, caps={"fs", "print"})
+    assert rc == 0, err
+    assert out.splitlines() == ["true", "[6, 6, 8175, 8190, 4]"]

@@ -270,6 +270,15 @@ _COLLECTION_LIMITED_BUILTINS = frozenset(
         "set_union",
         "mutable_map_set",
         "vec_push",
+        "bytes_from_list",
+        "bytes_to_list",
+        "bytes_from_utf8",
+        "bytes_to_utf8",
+        "bytes_from_hex",
+        "bytes_to_hex",
+        "bytes_from_base64",
+        "bytes_to_base64",
+        "bytes_concat",
     }
 )
 

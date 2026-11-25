@@ -187,12 +187,12 @@ call the corresponding builtins.
 | `clock`    | `datetime_now`, `datetime_format`, `datetime_parse`, `datetime_elapsed`, `clock_now`, `clock_format`, `clock_parse`, `clock_elapsed`, `sleep_ms` | Low |
 | `random`   | `math_random_int`, `math_random_float`, `random_int`, `random_float` | Low |
 | `env`      | `env_get`, `env_get_or`, `cli_args`                    | Medium     |
-| `fs`       | `fs_read_text`, `fs_write_text`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize` | High  |
-| `http`     | `http_fetch`, `http_post`, `http_request`              | High       |
+| `fs`       | `fs_read_text`, `fs_write_text`, `fs_read_bytes`, `fs_write_bytes`, `fs_each_line`, `fs_each_chunk`, `fs_list_dir`, `fs_exists`, `fs_metadata`, `fs_symlink_metadata`, `fs_canonicalize` | High  |
+| `http`     | `http_fetch`, `http_fetch_bytes`, `http_post`, `http_request` | High       |
 | `regex`    | `regex_match`, `regex_find_all`, `regex_replace`       | Low        |
 | `process`  | `exec`, `exec_with_input`, `spawn`, `spawn_with_input` | Critical   |
 | `serve`    | `http_listen`, `http_route`, `http_respond`            | High       |
-| `stdin`    | `stdin_read_all`                                       | Medium     |
+| `stdin`    | `stdin_read_all`, `stdin_each_line`                    | Medium     |
 
 ### Denied by Default
 
