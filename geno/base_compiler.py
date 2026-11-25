@@ -483,6 +483,9 @@ class BaseCompiler(ABC):
             if isinstance(value, (list, tuple)):
                 for item in value:
                     collect(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    collect(item)
             elif is_dataclass(value) and not isinstance(value, type):
                 for field_info in fields(value):
                     if field_info.name.startswith("_"):
@@ -1144,6 +1147,8 @@ class BaseCompiler(ABC):
             node = stack.pop()
             if isinstance(node, (list, tuple)):
                 stack.extend(node)
+            elif isinstance(node, dict):
+                stack.extend(node.values())
             elif isinstance(node, FunctionCall):
                 if node._json_codec is not None:
                     return True

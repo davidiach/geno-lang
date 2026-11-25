@@ -2489,6 +2489,9 @@ class TypeChecker(ExhaustivenessMixin):
                 type_info = self.type_defs.get(defn.name)
                 if type_info is None:
                     continue
+                rigid_subs: dict[str, Type] = {
+                    tp: TypeParam(tp) for tp in defn.type_params
+                }
                 for variant in defn.variants:
                     if not variant.field_defaults:
                         continue
@@ -2497,12 +2500,19 @@ class TypeChecker(ExhaustivenessMixin):
                         field_type = field_types.get(field_name)
                         if field_type is None:
                             continue
+                        expected_field_type = (
+                            self._substitute_type_vars(field_type, rigid_subs)
+                            if rigid_subs
+                            else field_type
+                        )
                         if not validate_effects:
-                            self._prime_lambda(default_expr, field_type)
+                            self._prime_lambda(default_expr, expected_field_type)
                             actual = self._check_expression(
                                 default_expr, self.global_env
                             )
-                            if not self._types_compatible(field_type, actual):
+                            if not self._types_strictly_compatible(
+                                expected_field_type, actual
+                            ):
                                 self._error(
                                     f"Default value for field '{field_name}' of "
                                     f"{variant.name} has type {actual}, expected "

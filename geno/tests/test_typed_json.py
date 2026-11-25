@@ -1209,3 +1209,69 @@ def test_formatter_preserves_json_attributes_and_default_fields():
         ")\n"
     )
     assert format_source(formatted) == formatted
+
+
+def test_generic_field_defaults_reject_concrete_mismatch():
+    bad_scalar = """
+type Pair[T] = Pair(first: T, second: T = 1)
+
+func main() -> Int
+    let p: Pair[String] = Pair("x")
+    return length(p.first)
+end func
+"""
+    res_scalar = geno.check(bad_scalar)
+    assert not res_scalar.ok
+    assert any("expected T" in d.message for d in res_scalar.diagnostics)
+
+    bad_list = """
+type Bag[T] = Bag(items: List[T] = [1])
+
+func main() -> Int
+    let b: Bag[String] = Bag()
+    return length(b.items)
+end func
+"""
+    res_list = geno.check(bad_list)
+    assert not res_list.ok
+    assert any("expected List[T]" in d.message for d in res_list.diagnostics)
+
+
+@pytest.mark.parametrize("run_backend", BACKENDS)
+def test_generic_field_defaults_allow_polymorphic(run_backend):
+    good = """
+type Box[T] = Box(
+    value: Option[T] = None,
+    items: List[T] = [],
+    tag: String = "ok",
+)
+
+func main() -> Unit with io
+    let b: Box[String] = Box()
+    let n = length(b.items)
+    let has = match b.value with
+        | Some(_) -> "some"
+        | None -> "none"
+    end match
+    print(f"{b.tag}:{has}:{n}")
+end func
+"""
+    assert run_backend(good) == "ok:none:0\n"
+
+
+@pytest.mark.parametrize("run_backend", BACKENDS)
+def test_field_default_with_only_json_decode_registers_constructors(run_backend):
+    source = """
+type Inner = Inner(n: Int)
+type Outer = Outer(value: Result[Inner, String] = json_decode[Inner]("{\\"n\\":42}"))
+
+func main() -> Unit with io
+    let o = Outer()
+    let n = match o.value with
+        | Ok(Inner(v)) -> v
+        | Err(_) -> -1
+    end match
+    print(to_string(n))
+end func
+"""
+    assert run_backend(source) == "42\n"
